@@ -44,7 +44,7 @@ static void _sha256x8(
         ctx->msglen += 512;
     }
 
-    int bytes_to_copy = inlen - i;
+    unsigned int bytes_to_copy = (unsigned int)(inlen - i);
     memcpy(&ctx->msgblocks[64*0], in0 + i, bytes_to_copy);
     memcpy(&ctx->msgblocks[64*1], in1 + i, bytes_to_copy);
     memcpy(&ctx->msgblocks[64*2], in2 + i, bytes_to_copy);
@@ -83,7 +83,7 @@ void sha256x8_seeded(
 
     for (size_t i = 0; i < 8; i++) {
         t = load_bigendian_32(seed + 4*i);
-        ctx.s[i] = _mm256_set_epi32(t, t, t, t, t, t, t, t);
+        ctx.s[i] = _mm256_set1_epi32((int32_t)t);
     }
 
     ctx.datalen = 0;
@@ -151,7 +151,7 @@ void mgf1x8(unsigned char *outx8, unsigned long outlen,
     /* While we can fit in at least another full block of SHA256 output.. */
     for (i = 0; (i+1)*SPX_SHA256_OUTPUT_BYTES <= outlen; i++) {
         for (j = 0; j < 8; j++) {
-            u32_to_bytes(inbufx8 + inlen + j*(inlen + 4), i);
+            u32_to_bytes(inbufx8 + inlen + j*(inlen + 4), (uint32_t)i);
         }
 
         sha256x8(outx8 + 0*outlen,
@@ -174,7 +174,7 @@ void mgf1x8(unsigned char *outx8, unsigned long outlen,
     }
     /* Until we cannot anymore, and we fill the remainder. */
     for (j = 0; j < 8; j++) {
-        u32_to_bytes(inbufx8 + inlen + j*(inlen + 4), i);
+        u32_to_bytes(inbufx8 + inlen + j*(inlen + 4), (uint32_t)i);
     }
     sha256x8(outbufx8 + 0*SPX_SHA256_OUTPUT_BYTES,
              outbufx8 + 1*SPX_SHA256_OUTPUT_BYTES,

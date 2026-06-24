@@ -114,6 +114,43 @@ void gen_message_random(unsigned char *R, const unsigned char *sk_prf,
     memcpy(R, buf, SPX_N);
 }
 
+/*
+ * MGF1 with midstate caching: hash full-block input prefixes once, then clone
+ * that state for each counter suffix.
+ */
+static void mgf1_X_cached(unsigned char *out, unsigned long outlen,
+                          const unsigned char *in, unsigned long inlen)
+{
+    uint8_t seeded_state[8 + SPX_SHAX_OUTPUT_BYTES];
+    uint8_t state[8 + SPX_SHAX_OUTPUT_BYTES];
+    unsigned char outbuf[SPX_SHAX_OUTPUT_BYTES];
+    unsigned char tail[SPX_SHAX_BLOCK_BYTES + 4];
+    unsigned long i;
+    unsigned long inblocks = inlen / SPX_SHAX_BLOCK_BYTES;
+    unsigned long inrem = inlen % SPX_SHAX_BLOCK_BYTES;
+    const unsigned char *inrem_ptr = in + (inblocks * SPX_SHAX_BLOCK_BYTES);
+
+    shaX_inc_init(seeded_state);
+    if (inblocks > 0) {
+        shaX_inc_blocks(seeded_state, in, inblocks);
+    }
+    memcpy(tail, inrem_ptr, inrem);
+
+    for (i = 0; (i + 1) * SPX_SHAX_OUTPUT_BYTES <= outlen; i++) {
+        memcpy(state, seeded_state, sizeof(state));
+        u32_to_bytes(tail + inrem, (uint32_t)i);
+        shaX_inc_finalize(out, state, tail, inrem + 4);
+        out += SPX_SHAX_OUTPUT_BYTES;
+    }
+
+    if (outlen > i * SPX_SHAX_OUTPUT_BYTES) {
+        memcpy(state, seeded_state, sizeof(state));
+        u32_to_bytes(tail + inrem, (uint32_t)i);
+        shaX_inc_finalize(outbuf, state, tail, inrem + 4);
+        memcpy(out, outbuf, outlen - i * SPX_SHAX_OUTPUT_BYTES);
+    }
+}
+
 /**
  * Computes the message hash using R, the public key, and the message.
  * Outputs the message digest and the index of the leaf. The index is split in
@@ -173,7 +210,7 @@ void hash_message(unsigned char *digest, uint64_t *tree, uint32_t *leaf_idx,
 
     /* By doing this in two steps, we prevent hashing the message twice;
        otherwise each iteration in MGF1 would hash the message again. */
-    mgf1_X(bufp, SPX_DGST_BYTES, seed, 2*SPX_N + SPX_SHAX_OUTPUT_BYTES);
+    mgf1_X_cached(bufp, SPX_DGST_BYTES, seed, 2*SPX_N + SPX_SHAX_OUTPUT_BYTES);
 
     memcpy(digest, bufp, SPX_FORS_MSG_BYTES);
     bufp += SPX_FORS_MSG_BYTES;
@@ -193,5 +230,3 @@ void hash_message(unsigned char *digest, uint64_t *tree, uint32_t *leaf_idx,
     *leaf_idx = (uint32_t)bytes_to_ull(bufp, SPX_LEAF_BYTES);
     *leaf_idx &= (~(uint32_t)0) >> (32 - SPX_LEAF_BITS);
 }
-
-

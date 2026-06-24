@@ -8,13 +8,10 @@ VERBOSE ?= 0
 INSTALL_DEPS ?= 0
 BUILD_DOCS ?= 0
 NO_COLOR ?= 0
-BUILD_BINDINGS ?= 0
 
 # Tool detection
 CMAKE := $(shell command -v cmake 2> /dev/null)
 CARGO := $(shell command -v cargo 2> /dev/null)
-PYTHON := $(shell command -v python3 2> /dev/null)
-NPM := $(shell command -v npm 2> /dev/null)
 
 # Build directories
 BUILD_DIR := build
@@ -38,14 +35,10 @@ endif
 
 # Default target
 .PHONY: all
-all: info c-lib rust-lib bindings
+all: info c-lib rust-lib
 
 .PHONY: everything
 everything: all examples tests docs
-
-# Bindings target
-.PHONY: bindings
-bindings: python nodejs
 
 # Print build information
 .PHONY: info
@@ -54,16 +47,13 @@ info:
 	@echo -e "${BLUE}------------------------------------------------------------${NC}"
 	@if [ -n "$(CMAKE)" ]; then echo -e "  [${GREEN}✓${NC}] CMake: $(CMAKE)"; else echo -e "  [${RED}✗${NC}] CMake (required for C library)"; fi
 	@if [ -n "$(CARGO)" ]; then echo -e "  [${GREEN}✓${NC}] Cargo: $(CARGO)"; else echo -e "  [${RED}✗${NC}] Cargo (required for Rust library)"; fi
-	@if [ -n "$(PYTHON)" ]; then echo -e "  [${GREEN}✓${NC}] Python: $(PYTHON)"; else echo -e "  [${YELLOW}!${NC}] Python (optional for Python bindings)"; fi
-	@if [ -n "$(NPM)" ]; then echo -e "  [${GREEN}✓${NC}] NPM: $(NPM)"; else echo -e "  [${YELLOW}!${NC}] NPM (optional for NodeJS bindings)"; fi
 	@echo -e "${BLUE}------------------------------------------------------------${NC}"
-	@echo -e "${YELLOW}This will build the core libraries (C and Rust) and language bindings.${NC}"
+	@echo -e "${YELLOW}This will build the core C and Rust libraries.${NC}"
 	@echo -e "${YELLOW}Available make targets:${NC}"
 	@echo -e "  ${GREEN}make c-lib${NC}        - Build only the C library"
 	@echo -e "  ${GREEN}make rust-lib${NC}     - Build only the Rust library"
-	@echo -e "  ${GREEN}make bindings${NC}     - Build only Python and NodeJS bindings"
 	@echo -e "  ${GREEN}make examples${NC}     - Build example programs"
-	@echo -e "  ${GREEN}make everything${NC}   - Build all components (libraries, bindings, examples, tests)"
+	@echo -e "  ${GREEN}make everything${NC}   - Build libraries, examples, tests, and docs"
 	@echo -e "  ${GREEN}make help${NC}         - Show all available targets"
 	@echo -e "${BLUE}------------------------------------------------------------${NC}"
 
@@ -90,12 +80,7 @@ rust-lib:
 
 # Example targets
 .PHONY: examples
-examples: c-examples rust-examples
-
-.PHONY: c-examples
-c-examples: c-lib
-	@echo -e "${BLUE}Building C examples...${NC}"
-	@cmake --build $(BUILD_DIR) --target examples
+examples: rust-examples
 
 .PHONY: rust-examples
 rust-examples:
@@ -133,32 +118,6 @@ else
 	@echo -e "${YELLOW}Skipping documentation build (use BUILD_DOCS=1 to enable)${NC}"
 endif
 
-# Language bindings
-.PHONY: python
-python: rust-lib
-	@echo -e "${BLUE}Building Python bindings...${NC}"
-	@if [ -n "$(PYTHON)" ]; then \
-		echo -e "${YELLOW}Creating a Python virtual environment...${NC}"; \
-		$(PYTHON) -m venv python/.venv || { echo -e "${RED}Failed to create virtual environment${NC}"; exit 1; }; \
-		echo -e "${GREEN}Virtual environment created at python/.venv${NC}"; \
-		echo -e "${YELLOW}Installing Python bindings in virtual environment...${NC}"; \
-		. python/.venv/bin/activate && cd python && $(PYTHON) -m pip install -e . && \
-		echo -e "${GREEN}Python bindings installed successfully in virtual environment${NC}"; \
-		echo -e "${YELLOW}To use the bindings, activate the virtual environment:${NC}"; \
-		echo -e "  source python/.venv/bin/activate"; \
-	else \
-		echo -e "${RED}Python not found, skipping Python bindings${NC}"; \
-	fi
-
-.PHONY: nodejs
-nodejs: rust-lib
-	@echo -e "${BLUE}Building NodeJS bindings...${NC}"
-	@if [ -n "$(NPM)" ]; then \
-		cd nodejs && $(NPM) install && $(NPM) run build; \
-	else \
-		echo -e "${RED}NPM not found, skipping NodeJS bindings${NC}"; \
-	fi
-
 # Installation targets
 .PHONY: install
 install: install-c install-rust
@@ -175,7 +134,7 @@ install-rust: rust-lib
 
 # Clean targets
 .PHONY: clean
-clean: clean-c clean-rust clean-bindings
+clean: clean-c clean-rust
 
 .PHONY: clean-c
 clean-c:
@@ -187,25 +146,16 @@ clean-rust:
 	@echo -e "${BLUE}Cleaning Rust library build files...${NC}"
 	@$(CARGO) clean
 
-.PHONY: clean-bindings
-clean-bindings:
-	@echo -e "${BLUE}Cleaning language bindings...${NC}"
-	@if [ -d "python/build" ]; then rm -rf python/build; fi
-	@if [ -d "nodejs/dist" ]; then rm -rf nodejs/dist; fi
-
 # Help target
 .PHONY: help
 help:
 	@echo -e "${BLUE}libbitcoinpqc Makefile Help${NC}"
 	@echo -e "${BLUE}-------------------------${NC}"
 	@echo -e "Main targets:"
-	@echo -e "  ${GREEN}all${NC}             - Build C and Rust libraries and language bindings (default)"
-	@echo -e "  ${GREEN}bindings${NC}        - Build Python and NodeJS bindings"
+	@echo -e "  ${GREEN}all${NC}             - Build C and Rust libraries (default)"
 	@echo -e "  ${GREEN}everything${NC}      - Build all components including examples and tests"
 	@echo -e "  ${GREEN}c-lib${NC}           - Build only the C library"
 	@echo -e "  ${GREEN}rust-lib${NC}        - Build only the Rust library"
-	@echo -e "  ${GREEN}python${NC}          - Build Python bindings"
-	@echo -e "  ${GREEN}nodejs${NC}          - Build NodeJS bindings"
 	@echo -e "  ${GREEN}examples${NC}        - Build example programs"
 	@echo -e "  ${GREEN}tests${NC}           - Run all tests"
 	@echo -e "  ${GREEN}bench${NC}           - Run benchmarks"
@@ -254,12 +204,6 @@ troubleshoot:
 	@echo -e ""
 	@echo -e "  ${YELLOW}Missing tools:${NC}"
 	@echo -e "    Make sure you have all required development tools installed."
-	@echo -e ""
-	@echo -e "  ${YELLOW}Python or NodeJS bindings issues:${NC}"
-	@echo -e "    If you experience Python or NodeJS binding problems:"
-	@echo -e "    - For Python: Check the virtual environment at python/.venv"
-	@echo -e "    - For NodeJS: Check the build logs in nodejs/build"
-	@echo -e "    You can build bindings separately with 'make python' or 'make nodejs'"
 	@echo -e ""
 	@echo -e "  ${YELLOW}Terminal color issues:${NC}"
 	@echo -e "    If you see raw escape sequences (like \\033[0;32m), run with NO_COLOR=1"

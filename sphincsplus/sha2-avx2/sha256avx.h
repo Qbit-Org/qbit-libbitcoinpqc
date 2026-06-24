@@ -3,7 +3,7 @@
 #include "immintrin.h"
 #include <stdint.h>
 
-static const unsigned int RC[] = {
+static const uint32_t RC[] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
     0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
@@ -31,8 +31,8 @@ static const unsigned int RC[] = {
 #define ADD32 _mm256_add_epi32
 #define NOT(x) _mm256_xor_si256(x, _mm256_set_epi32(-1, -1, -1, -1, -1, -1, -1, -1))
 
-#define LOAD(src) _mm256_loadu_si256((__m256i *)(src))
-#define STORE(dest,src) _mm256_storeu_si256((__m256i *)(dest),src)
+#define LOAD(src) _mm256_loadu_si256((const __m256i_u *)(const void *)(src))
+#define STORE(dest,src) _mm256_storeu_si256((__m256i_u *)(void *)(dest), (src))
 
 #define BYTESWAP(x) _mm256_shuffle_epi8(x, _mm256_set_epi8(0xc,0xd,0xe,0xf,0x8,0x9,0xa,0xb,0x4,0x5,0x6,0x7,0x0,0x1,0x2,0x3,0xc,0xd,0xe,0xf,0x8,0x9,0xa,0xb,0x4,0x5,0x6,0x7,0x0,0x1,0x2,0x3))
 
@@ -56,9 +56,10 @@ static const unsigned int RC[] = {
 
 #define WSIGMA1_AVX(x) XOR3(ROTR32(x, 17), ROTR32(x, 19), SHIFTR32(x, 10))
 #define WSIGMA0_AVX(x) XOR3(ROTR32(x, 7), ROTR32(x, 18), SHIFTR32(x, 3))
+#define U32_TO_I32(x) ((int32_t)(x))
 
 #define SHA256ROUND_AVX(a, b, c, d, e, f, g, h, rc, w) \
-    T0 = ADD5_32(h, SIGMA1_AVX(e), CH_AVX(e, f, g), _mm256_set1_epi32(RC[rc]), w); \
+    T0 = ADD5_32(h, SIGMA1_AVX(e), CH_AVX(e, f, g), _mm256_set1_epi32(U32_TO_I32(RC[rc])), w); \
     d = ADD32(d, T0); \
     T1 = ADD32(SIGMA0_AVX(a), MAJ_AVX(a, b, c)); \
     h = ADD32(T0, T1);
@@ -66,7 +67,7 @@ static const unsigned int RC[] = {
 typedef struct SHA256state {
     u256 s[8];
     unsigned char msgblocks[8*64];
-    int datalen;
+    unsigned int datalen;
     unsigned long long msglen;
 } sha256ctx;
 

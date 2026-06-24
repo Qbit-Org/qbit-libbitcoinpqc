@@ -2,17 +2,10 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-#[cfg(feature = "serde")]
-use std::convert::TryFrom;
 use std::error::Error as StdError;
 use std::fmt;
-use std::hash::Hash;
 use std::ptr;
-
-use bitmask_enum::bitmask;
-use secp256k1::{
-    schnorr, All, Keypair as SecpKeypair, Secp256k1, SecretKey as SecpSecretKey, XOnlyPublicKey,
-};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -20,7 +13,6 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "serde")]
 mod hex_bytes {
     use serde::{de::Error, Deserialize, Deserializer, Serializer};
-    use std::vec::Vec; // Ensure Vec is in scope
 
     pub fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -38,31 +30,25 @@ mod hex_bytes {
     }
 }
 
-// Include the auto-generated bindings using our wrapper
-// Make it pub(crate) so doctests can access these symbols
+#[allow(dead_code)]
 pub(crate) mod bindings_include;
-// Use a glob import to get all the symbols consistently
 use bindings_include::*;
 
-/// Error type for PQC operations
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum PqcError {
-    /// Invalid arguments provided
     BadArgument,
-    /// Not enough data provided (e.g., for key generation)
     InsufficientData,
-    /// Invalid key provided or invalid format for the specified algorithm
     BadKey,
-    /// Invalid signature provided or invalid format for the specified algorithm
     BadSignature,
-    /// Algorithm not implemented (e.g., trying to sign/keygen Secp256k1)
     NotImplemented,
-    /// Provided public key and signature algorithms do not match
-    AlgorithmMismatch,
-    /// Secp256k1 context error (should be rare with global context)
-    Secp256k1Error(secp256k1::Error),
-    /// Other unexpected error from the C library
+    SigningLimitExceeded,
     Other(i32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignWithStatsError {
+    pub error: PqcError,
+    pub stats: Option<SigningStats>,
 }
 
 impl fmt::Display for PqcError {
@@ -72,627 +58,691 @@ impl fmt::Display for PqcError {
             PqcError::InsufficientData => write!(f, "Not enough data provided"),
             PqcError::BadKey => write!(f, "Invalid key provided or invalid format"),
             PqcError::BadSignature => write!(f, "Invalid signature provided or invalid format"),
-            PqcError::NotImplemented => write!(f, "Algorithm not implemented"),
-            PqcError::AlgorithmMismatch => {
-                write!(f, "Public key and signature algorithms mismatch")
-            }
-            PqcError::Secp256k1Error(e) => write!(f, "Secp256k1 error: {e}"),
+            PqcError::NotImplemented => write!(f, "Operation not implemented"),
+            PqcError::SigningLimitExceeded => write!(f, "Signing attempt limit exceeded"),
             PqcError::Other(code) => write!(f, "Unexpected error code: {code}"),
         }
     }
 }
 
-impl StdError for PqcError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            PqcError::Secp256k1Error(e) => Some(e),
-            _ => None,
-        }
-    }
-}
+impl StdError for PqcError {}
 
-impl From<secp256k1::Error> for PqcError {
-    fn from(e: secp256k1::Error) -> Self {
-        PqcError::Secp256k1Error(e)
-    }
-}
-
-impl From<bitcoin_pqc_error_t> for Result<(), PqcError> {
-    fn from(error: bitcoin_pqc_error_t) -> Self {
-        match error {
-            bitcoin_pqc_error_t::BITCOIN_PQC_OK => Ok(()),
-            bitcoin_pqc_error_t::BITCOIN_PQC_ERROR_BAD_ARG => Err(PqcError::BadArgument),
-            bitcoin_pqc_error_t::BITCOIN_PQC_ERROR_BAD_KEY => Err(PqcError::BadKey),
-            bitcoin_pqc_error_t::BITCOIN_PQC_ERROR_BAD_SIGNATURE => Err(PqcError::BadSignature),
-            bitcoin_pqc_error_t::BITCOIN_PQC_ERROR_NOT_IMPLEMENTED => Err(PqcError::NotImplemented),
-            _ => Err(PqcError::Other(error.0)),
-        }
-    }
-}
-
-/// PQC Algorithm type
-#[bitmask(u8)]
-// We derive serde conditionally, other traits like Debug, Clone, Eq, Hash etc.
-// should be provided by the included C bindings or the bitmask macro.
-#[cfg_attr(
-    feature = "serde",
-    derive(Serialize, Deserialize),
-    serde(try_from = "String", into = "String")
-)]
-pub enum Algorithm {
-    /// BIP-340 Schnorr + X-Only - Elliptic Curve Digital Signature Algorithm
-    SECP256K1_SCHNORR,
-    /// ML-DSA-44 (CRYSTALS-Dilithium) - Lattice-based signature scheme
-    ML_DSA_44,
-    /// SLH-DSA-Shake-128s (SPHINCS+) - Hash-based signature scheme
-    SLH_DSA_128S,
-}
-
-impl From<Algorithm> for bitcoin_pqc_algorithm_t {
-    fn from(alg: Algorithm) -> Self {
-        match alg {
-            Algorithm::SECP256K1_SCHNORR => bitcoin_pqc_algorithm_t::BITCOIN_PQC_SECP256K1_SCHNORR,
-            Algorithm::ML_DSA_44 => bitcoin_pqc_algorithm_t::BITCOIN_PQC_ML_DSA_44,
-            Algorithm::SLH_DSA_128S => bitcoin_pqc_algorithm_t::BITCOIN_PQC_SLH_DSA_SHAKE_128S,
-            _ => panic!("Invalid algorithm"),
-        }
-    }
-}
-
-// Serde implementations using string representation directly on Algorithm
-#[cfg(feature = "serde")]
-impl TryFrom<String> for Algorithm {
-    type Error = String; // Serde requires specific error handling
-
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        match s.as_str() {
-            "SECP256K1_SCHNORR" => Ok(Algorithm::SECP256K1_SCHNORR),
-            "ML_DSA_44" => Ok(Algorithm::ML_DSA_44),
-            "SLH_DSA_128S" => Ok(Algorithm::SLH_DSA_128S),
-            _ => Err(format!("Unknown algorithm string: {s}")),
-        }
-    }
-}
-
-#[cfg(feature = "serde")]
-impl From<Algorithm> for String {
-    fn from(alg: Algorithm) -> Self {
-        match alg {
-            Algorithm::SECP256K1_SCHNORR => "SECP256K1_SCHNORR".to_string(),
-            Algorithm::ML_DSA_44 => "ML_DSA_44".to_string(),
-            Algorithm::SLH_DSA_128S => "SLH_DSA_128S".to_string(),
-            _ => panic!("Invalid algorithm variant"), // Should not happen with bitmask
-        }
-    }
-}
-
-impl fmt::Display for Algorithm {
+impl fmt::Display for SignWithStatsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Algorithm::SECP256K1_SCHNORR => write!(f, "SECP256K1_SCHNORR"),
-            Algorithm::ML_DSA_44 => write!(f, "ML_DSA_44"),
-            Algorithm::SLH_DSA_128S => write!(f, "SLH_DSA_128S"),
-            _ => write!(f, "Unknown({:b})", self.bits),
-        }
+        self.error.fmt(f)
     }
 }
 
-impl Algorithm {
-    /// Returns a user-friendly debug string with the algorithm name
-    pub fn debug_name(&self) -> String {
-        match *self {
-            Algorithm::SECP256K1_SCHNORR => "SECP256K1_SCHNORR".to_string(),
-            Algorithm::ML_DSA_44 => "ML_DSA_44".to_string(),
-            Algorithm::SLH_DSA_128S => "SLH_DSA_128S".to_string(),
-            _ => format!("Unknown({:b})", self.bits),
-        }
+impl StdError for SignWithStatsError {}
+
+impl From<SignWithStatsError> for PqcError {
+    fn from(error: SignWithStatsError) -> Self {
+        error.error
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct PublicKey {
-    /// The algorithm this key belongs to
-    #[cfg_attr(feature = "serde", serde(flatten))]
-    pub algorithm: Algorithm,
-    /// The raw key bytes (serialized as hex)
     #[cfg_attr(feature = "serde", serde(with = "hex_bytes"))]
     pub bytes: Vec<u8>,
 }
 
 impl PublicKey {
-    /// Creates a PublicKey from an algorithm and a byte slice.
-    ///
-    /// Validates the length of the byte slice against the expected size for the algorithm.
-    /// For Secp256k1, also validates the byte format.
-    pub fn try_from_slice(algorithm: Algorithm, bytes: &[u8]) -> Result<Self, PqcError> {
-        let expected_len = public_key_size(algorithm);
-        if bytes.len() != expected_len {
-            return Err(PqcError::BadKey); // Use BadKey for length mismatch
-        }
-
-        // Additional validation for Secp256k1 keys
-        if algorithm == Algorithm::SECP256K1_SCHNORR {
-            XOnlyPublicKey::from_slice(bytes).map_err(|_| PqcError::BadKey)?;
-        }
-
-        Ok(PublicKey {
-            algorithm,
-            bytes: bytes.to_vec(),
-        })
-    }
-
-    /// Creates a PublicKey from an algorithm and a hex string.
-    pub fn from_str(algorithm: Algorithm, s: &str) -> Result<Self, PqcError> {
-        let bytes = hex::decode(s).map_err(|_| PqcError::BadArgument)?;
-        Self::try_from_slice(algorithm, &bytes)
-    }
-
-    /// Returns the underlying secp256k1 XOnlyPublicKey if applicable.
-    pub fn secp256k1_key(&self) -> Result<XOnlyPublicKey, PqcError> {
-        if self.algorithm == Algorithm::SECP256K1_SCHNORR {
-            XOnlyPublicKey::from_slice(&self.bytes).map_err(|_| PqcError::BadKey)
-        // Should be valid if constructed correctly
-        } else {
-            Err(PqcError::AlgorithmMismatch)
-        }
-    }
-}
-
-/// Secret key wrapper
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct SecretKey {
-    /// The algorithm this key belongs to
-    #[cfg_attr(feature = "serde", serde(flatten))]
-    pub algorithm: Algorithm,
-    /// The raw key bytes (serialized as hex)
-    #[cfg_attr(feature = "serde", serde(with = "hex_bytes"))]
-    pub bytes: Vec<u8>,
-}
-
-impl SecretKey {
-    /// Creates a SecretKey from an algorithm and a hex string.
-    pub fn from_str(algorithm: Algorithm, s: &str) -> Result<Self, PqcError> {
-        let bytes = hex::decode(s).map_err(|_| PqcError::BadArgument)?;
-        Self::try_from_slice(algorithm, &bytes)
-    }
-
-    /// Creates a SecretKey from an algorithm and a byte slice.
-    ///
-    /// Validates the length of the byte slice against the expected size for the algorithm.
-    /// For Secp256k1, also validates the byte format.
-    pub fn try_from_slice(algorithm: Algorithm, bytes: &[u8]) -> Result<Self, PqcError> {
-        let expected_len = secret_key_size(algorithm);
-        if bytes.len() != expected_len {
+    pub fn try_from_slice(bytes: &[u8]) -> Result<Self, PqcError> {
+        if bytes.len() != public_key_size() {
             return Err(PqcError::BadKey);
         }
 
-        // Additional validation for Secp256k1 keys
-        if algorithm == Algorithm::SECP256K1_SCHNORR {
-            // SecpSecretKey::from_slice does verification, checking if the key is valid (non-zero)
-            SecpSecretKey::from_slice(bytes).map_err(|_| PqcError::BadKey)?;
-        }
-
-        Ok(SecretKey {
-            algorithm,
+        Ok(Self {
             bytes: bytes.to_vec(),
         })
     }
 
-    /// Returns the underlying secp256k1 SecretKey if applicable.
-    pub fn secp256k1_key(&self) -> Result<SecpSecretKey, PqcError> {
-        if self.algorithm == Algorithm::SECP256K1_SCHNORR {
-            SecpSecretKey::from_slice(&self.bytes).map_err(|_| PqcError::BadKey)
-        // Should be valid if constructed correctly
-        } else {
-            Err(PqcError::AlgorithmMismatch)
-        }
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Result<Self, PqcError> {
+        let bytes = hex::decode(s).map_err(|_| PqcError::BadArgument)?;
+        Self::try_from_slice(&bytes)
     }
 }
 
-impl Drop for SecretKey {
-    fn drop(&mut self) {
-        // Zero out secret key memory on drop
-        // Consider using crates like `zeroize` for more robust clearing
-        for byte in &mut self.bytes {
-            *byte = 0;
-        }
+/// SLH-DSA secret key material.
+///
+/// Secret key bytes are intentionally private to avoid accidental logging or
+/// serialization. Use [`SecretKey::as_secret_bytes`] only for explicit export
+/// or interoperability paths that must handle raw secret material.
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+#[cfg_attr(feature = "secret-key-serde", derive(Serialize, Deserialize))]
+pub struct SecretKey {
+    #[cfg_attr(feature = "secret-key-serde", serde(with = "hex_bytes"))]
+    bytes: Vec<u8>,
+}
+
+impl fmt::Debug for SecretKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecretKey")
+            .field("bytes", &RedactedBytes(self.bytes.len()))
+            .finish()
     }
 }
 
-/// Represents a signature (PQC or Secp256k1)
+impl SecretKey {
+    pub fn try_from_slice(bytes: &[u8]) -> Result<Self, PqcError> {
+        if bytes.len() != secret_key_size() {
+            return Err(PqcError::BadKey);
+        }
+
+        Ok(Self {
+            bytes: bytes.to_vec(),
+        })
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Result<Self, PqcError> {
+        let bytes = hex::decode(s).map_err(|_| PqcError::BadArgument)?;
+        Self::try_from_slice(&bytes)
+    }
+
+    /// Return the raw secret key bytes.
+    ///
+    /// This intentionally exposes secret key material. Do not log, serialize,
+    /// or retain copies of this data unless the calling protocol explicitly
+    /// requires it; zeroize any owned copies when they are no longer needed.
+    pub fn as_secret_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+struct RedactedBytes(usize);
+
+impl fmt::Debug for RedactedBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<redacted> ({} bytes)", self.0)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Signature {
-    /// The algorithm this signature belongs to
-    #[cfg_attr(feature = "serde", serde(flatten))]
-    pub algorithm: Algorithm,
-    /// The raw signature bytes (serialized as hex)
     #[cfg_attr(feature = "serde", serde(with = "hex_bytes"))]
     pub bytes: Vec<u8>,
 }
 
 impl Signature {
-    /// Creates a Signature from an algorithm and a byte slice.
-    ///
-    /// Validates the length of the byte slice against the expected size for the algorithm.
-    /// For Secp256k1, also validates the byte format.
-    pub fn try_from_slice(algorithm: Algorithm, bytes: &[u8]) -> Result<Self, PqcError> {
-        let expected_len = signature_size(algorithm);
-        if bytes.len() != expected_len {
+    pub fn try_from_slice(bytes: &[u8]) -> Result<Self, PqcError> {
+        if bytes.len() != signature_size() {
             return Err(PqcError::BadSignature);
         }
 
-        // Additional validation for Secp256k1 signatures
-        if algorithm == Algorithm::SECP256K1_SCHNORR {
-            // Schnorr signatures don't have a cheap validity check like keys,
-            // but from_slice checks the length (already done above).
-            schnorr::Signature::from_slice(bytes).map_err(|_| PqcError::BadSignature)?;
-        }
-
-        Ok(Signature {
-            algorithm,
+        Ok(Self {
             bytes: bytes.to_vec(),
         })
     }
 
-    /// Creates a Signature from an algorithm and a hex string.
-    pub fn from_str(algorithm: Algorithm, s: &str) -> Result<Self, PqcError> {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Result<Self, PqcError> {
         let bytes = hex::decode(s).map_err(|_| PqcError::BadArgument)?;
-        Self::try_from_slice(algorithm, &bytes)
-    }
-
-    /// Returns the underlying secp256k1 Schnorr Signature if applicable.
-    pub fn secp256k1_signature(&self) -> Result<schnorr::Signature, PqcError> {
-        if self.algorithm == Algorithm::SECP256K1_SCHNORR {
-            schnorr::Signature::from_slice(&self.bytes).map_err(|_| PqcError::BadSignature)
-        // Should be valid if constructed correctly
-        } else {
-            Err(PqcError::AlgorithmMismatch)
-        }
+        Self::try_from_slice(&bytes)
     }
 }
 
-/// Key pair containing both public and secret keys
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "secret-key-serde", derive(Serialize, Deserialize))]
 pub struct KeyPair {
-    /// The public key
     pub public_key: PublicKey,
-    /// The secret key
     pub secret_key: SecretKey,
 }
 
-/// Generate a key pair for the specified algorithm using provided seed data.
-///
-/// # Arguments
-///
-/// * `algorithm` - The algorithm to use (PQC or Secp256k1)
-/// * `random_data` - Seed bytes for key generation.
-///     - For PQC algorithms, must be at least 128 bytes.
-///     - For `SECP256K1_SCHNORR`, must be exactly 32 bytes representing the desired secret key.
-///
-/// # Returns
-///
-/// A new key pair on success, or an error if the `random_data` is invalid for the algorithm.
-///
-pub fn generate_keypair(algorithm: Algorithm, random_data: &[u8]) -> Result<KeyPair, PqcError> {
-    if algorithm == Algorithm::SECP256K1_SCHNORR {
-        // For Secp256k1, random_data *is* the secret key.
-        let required_size = secret_key_size(algorithm); // Should be 32
+impl fmt::Debug for KeyPair {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KeyPair")
+            .field("public_key", &self.public_key)
+            .field("secret_key", &self.secret_key)
+            .finish()
+    }
+}
 
-        // Check for insufficient data
-        if random_data.len() < required_size {
-            return Err(PqcError::InsufficientData);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SigningStats {
+    pub forsc_attempts: u32,
+    pub forsc_max_attempts: u32,
+    pub wotsc_attempts: Vec<u32>,
+    pub wotsc_max_attempts: u32,
+    pub wotsc_max_observed_attempts: u32,
+    pub cap_exceeded: u32,
+}
+
+impl SigningStats {
+    fn from_raw(raw: &bitcoin_pqc_sign_stats_t) -> Self {
+        let layer_count = (raw.wotsc_layer_count as usize).min(raw.wotsc_attempts.len());
+        Self {
+            forsc_attempts: raw.forsc_attempts,
+            forsc_max_attempts: raw.forsc_max_attempts,
+            wotsc_attempts: raw.wotsc_attempts[..layer_count].to_vec(),
+            wotsc_max_attempts: raw.wotsc_max_attempts,
+            wotsc_max_observed_attempts: raw.wotsc_max_observed_attempts,
+            cap_exceeded: raw.cap_exceeded,
+        }
+    }
+
+    pub fn limit_exceeded(&self) -> bool {
+        self.cap_exceeded != 0
+    }
+}
+
+fn pqc_error_from_code(error: bitcoin_pqc_error_t) -> PqcError {
+    match error {
+        bitcoin_pqc_error_t_BITCOIN_PQC_ERROR_BAD_ARG => PqcError::BadArgument,
+        bitcoin_pqc_error_t_BITCOIN_PQC_ERROR_BAD_KEY => PqcError::BadKey,
+        bitcoin_pqc_error_t_BITCOIN_PQC_ERROR_BAD_SIGNATURE => PqcError::BadSignature,
+        bitcoin_pqc_error_t_BITCOIN_PQC_ERROR_NOT_IMPLEMENTED => PqcError::NotImplemented,
+        bitcoin_pqc_error_t_BITCOIN_PQC_ERROR_SIGNING_LIMIT => PqcError::SigningLimitExceeded,
+        _ => PqcError::Other(error),
+    }
+}
+
+fn map_error(error: bitcoin_pqc_error_t) -> Result<(), PqcError> {
+    match error {
+        bitcoin_pqc_error_t_BITCOIN_PQC_OK => Ok(()),
+        _ => Err(pqc_error_from_code(error)),
+    }
+}
+
+/// Generate a keypair from caller-provided entropy.
+///
+/// The library borrows `random_data` and cannot clear caller-owned memory.
+/// Treat keygen entropy as sensitive seed material when applicable, and
+/// zeroize the caller's buffer after this call if it must not remain in memory.
+pub fn generate_keypair(random_data: &[u8]) -> Result<KeyPair, PqcError> {
+    if random_data.len() < 128 {
+        return Err(PqcError::InsufficientData);
+    }
+
+    unsafe {
+        let mut keypair = bitcoin_pqc_keypair_t {
+            public_key: ptr::null_mut(),
+            secret_key: ptr::null_mut(),
+            public_key_size: 0,
+            secret_key_size: 0,
+        };
+
+        let result = bitcoin_pqc_keygen(&mut keypair, random_data.as_ptr(), random_data.len());
+        if result != bitcoin_pqc_error_t_BITCOIN_PQC_OK {
+            bitcoin_pqc_keypair_free(&mut keypair);
+            map_error(result)?;
+            return Err(PqcError::Other(result));
         }
 
-        // Use the first 32 bytes, truncating excess data if provided
-        let key_data = &random_data[..required_size];
+        let pk_slice =
+            std::slice::from_raw_parts(keypair.public_key as *const u8, keypair.public_key_size);
+        let sk_slice =
+            std::slice::from_raw_parts(keypair.secret_key as *const u8, keypair.secret_key_size);
 
-        let secp = Secp256k1::<All>::new(); // Context needed for key derivation
-
-        // Attempt to create secret key from the provided data
-        let sk_result = SecpSecretKey::from_slice(key_data);
-        let sk = sk_result.map_err(|_| PqcError::BadKey)?;
-
-        // Create KeyPair from secret key
-        let keypair = SecpKeypair::from_secret_key(&secp, &sk);
-
-        // Derive the public key using from_keypair
-        let (pk, _parity) = XOnlyPublicKey::from_keypair(&keypair); // Destructure the tuple
-
-        // Construct the structs
         let public_key = PublicKey {
-            algorithm: Algorithm::SECP256K1_SCHNORR,
-            bytes: pk.serialize().to_vec(), // Serialize the XOnlyPublicKey part
+            bytes: pk_slice.to_vec(),
         };
         let secret_key = SecretKey {
-            algorithm: Algorithm::SECP256K1_SCHNORR,
-            bytes: sk.as_ref().to_vec(), // Use as_ref() to get &[u8] slice
+            bytes: sk_slice.to_vec(),
         };
+
+        bitcoin_pqc_keypair_free(&mut keypair);
+
         Ok(KeyPair {
             public_key,
             secret_key,
         })
-    } else {
-        // PQC key generation requires specific random data length
-        if random_data.len() < 128 {
-            return Err(PqcError::InsufficientData);
-        }
-
-        unsafe {
-            let mut keypair = bitcoin_pqc_keypair_t {
-                algorithm: algorithm.into(),
-                public_key: ptr::null_mut(),
-                secret_key: ptr::null_mut(),
-                public_key_size: 0,
-                secret_key_size: 0,
-            };
-
-            let result = bitcoin_pqc_keygen(
-                algorithm.into(),
-                &mut keypair,
-                random_data.as_ptr(),
-                random_data.len(),
-            );
-
-            if result != bitcoin_pqc_error_t::BITCOIN_PQC_OK {
-                // Free potentially allocated (but invalid) memory on error
-                bitcoin_pqc_keypair_free(&mut keypair);
-                return Err(match result {
-                    bitcoin_pqc_error_t::BITCOIN_PQC_ERROR_BAD_ARG => PqcError::BadArgument,
-                    bitcoin_pqc_error_t::BITCOIN_PQC_ERROR_BAD_KEY => PqcError::BadKey,
-                    bitcoin_pqc_error_t::BITCOIN_PQC_ERROR_NOT_IMPLEMENTED => {
-                        PqcError::NotImplemented
-                    }
-                    _ => PqcError::Other(result.0 as i32),
-                });
-            }
-
-            // Extract and copy the keys
-            let pk_slice = std::slice::from_raw_parts(
-                keypair.public_key as *const u8,
-                keypair.public_key_size,
-            );
-            let sk_slice = std::slice::from_raw_parts(
-                keypair.secret_key as *const u8,
-                keypair.secret_key_size,
-            );
-
-            let pk_bytes = pk_slice.to_vec();
-            let sk_bytes = sk_slice.to_vec();
-
-            // Free the C memory
-            bitcoin_pqc_keypair_free(&mut keypair);
-
-            // Construct the structs (validation is implicitly done by FFI success)
-            let public_key = PublicKey {
-                algorithm,
-                bytes: pk_bytes,
-            };
-            let secret_key = SecretKey {
-                algorithm,
-                bytes: sk_bytes,
-            };
-
-            Ok(KeyPair {
-                public_key,
-                secret_key,
-            })
-        }
     }
 }
 
-/// Sign a message using the specified secret key
-///
-/// # Arguments
-///
-/// * `secret_key` - The secret key to sign with
-/// * `message` - The message to sign.
-///     - For PQC algorithms, this is the raw message.
-///     - For `SECP256K1_SCHNORR`, this *must* be a 32-byte hash of the message.
-///
-/// # Returns
-///
-/// A signature on success, or an error
 pub fn sign(secret_key: &SecretKey, message: &[u8]) -> Result<Signature, PqcError> {
-    match secret_key.algorithm {
-        Algorithm::SECP256K1_SCHNORR => {
-            // For Secp256k1, message must be a 32-byte hash
-            let required_size = 32;
+    sign_inner(secret_key, message, None)
+        .map(|(signature, _)| signature)
+        .map_err(|error| error.error)
+}
 
-            // Check if message is too short
-            if message.len() < required_size {
-                return Err(PqcError::InsufficientData);
-            }
-
-            // Use only the first 32 bytes if message is longer
-            let msg_data = &message[..required_size];
-
-            let secp = Secp256k1::<All>::new(); // Signing context
-
-            // Parse secret key
-            let sk = secret_key.secp256k1_key()?;
-
-            // Create Keypair
-            let keypair = SecpKeypair::from_secret_key(&secp, &sk);
-
-            // Sign using sign_schnorr_no_aux_rand with the (potentially truncated) message slice
-            let schnorr_sig = secp.sign_schnorr_no_aux_rand(msg_data, &keypair);
-
-            // Construct result Signature
-            Ok(Signature {
-                algorithm: Algorithm::SECP256K1_SCHNORR,
-                bytes: schnorr_sig.as_ref().to_vec(),
-            })
-        }
-        pqc_alg => {
-            // PQC Signing logic using FFI
-            unsafe {
-                let mut signature = bitcoin_pqc_signature_t {
-                    algorithm: pqc_alg.into(),
-                    signature: ptr::null_mut(),
-                    signature_size: 0,
-                };
-
-                let result = bitcoin_pqc_sign(
-                    pqc_alg.into(),
-                    secret_key.bytes.as_ptr(),
-                    secret_key.bytes.len(),
-                    message.as_ptr(),
-                    message.len(),
-                    &mut signature,
-                );
-
-                if result != bitcoin_pqc_error_t::BITCOIN_PQC_OK {
-                    return Err(match result {
-                        bitcoin_pqc_error_t::BITCOIN_PQC_ERROR_BAD_ARG => PqcError::BadArgument,
-                        bitcoin_pqc_error_t::BITCOIN_PQC_ERROR_BAD_KEY => PqcError::BadKey,
-                        bitcoin_pqc_error_t::BITCOIN_PQC_ERROR_BAD_SIGNATURE => {
-                            PqcError::BadSignature
-                        }
-                        bitcoin_pqc_error_t::BITCOIN_PQC_ERROR_NOT_IMPLEMENTED => {
-                            PqcError::NotImplemented
-                        }
-                        _ => PqcError::Other(result.0 as i32),
-                    });
-                }
-
-                let sig_slice = std::slice::from_raw_parts(
-                    signature.signature as *const u8,
-                    signature.signature_size,
-                );
-                let sig_bytes = sig_slice.to_vec();
-
-                bitcoin_pqc_signature_free(&mut signature);
-
-                Ok(Signature {
-                    algorithm: pqc_alg,
-                    bytes: sig_bytes,
-                })
-            }
-        }
+pub fn sign_with_stats(
+    secret_key: &SecretKey,
+    message: &[u8],
+) -> Result<(Signature, SigningStats), SignWithStatsError> {
+    let mut stats = bitcoin_pqc_sign_stats_t {
+        forsc_attempts: 0,
+        forsc_max_attempts: 0,
+        wotsc_attempts: [0; BITCOIN_PQC_SIGN_WOTSC_LAYERS as usize],
+        wotsc_layer_count: 0,
+        wotsc_max_attempts: 0,
+        wotsc_max_observed_attempts: 0,
+        cap_exceeded: 0,
+    };
+    match sign_inner(secret_key, message, Some(&mut stats)) {
+        Ok((signature, stats)) => Ok((
+            signature,
+            stats.expect("sign_inner should return stats when requested"),
+        )),
+        Err(error) => Err(SignWithStatsError {
+            error: error.error,
+            stats: error.stats,
+        }),
     }
 }
 
-/// Verify a signature using the specified public key
-///
-/// # Arguments
-///
-/// * `public_key` - The public key to verify with
-/// * `message` - The message that was signed (assumed to be pre-hashed for Secp256k1)
-/// * `signature` - The signature to verify
-///
-/// # Returns
-///
-/// Ok(()) if the signature is valid, an error otherwise
+#[derive(Debug)]
+struct SignInnerError {
+    error: PqcError,
+    stats: Option<SigningStats>,
+}
+
+fn sign_inner(
+    secret_key: &SecretKey,
+    message: &[u8],
+    mut stats: Option<&mut bitcoin_pqc_sign_stats_t>,
+) -> Result<(Signature, Option<SigningStats>), SignInnerError> {
+    let secret_key_bytes = secret_key.as_secret_bytes();
+    if secret_key_bytes.len() != secret_key_size() {
+        return Err(SignInnerError {
+            error: PqcError::BadKey,
+            stats: None,
+        });
+    }
+
+    unsafe {
+        let mut signature = bitcoin_pqc_signature_t {
+            signature: ptr::null_mut(),
+            signature_size: 0,
+        };
+
+        let stats_ptr = match stats.as_deref_mut() {
+            Some(stats) => stats as *mut bitcoin_pqc_sign_stats_t,
+            None => ptr::null_mut(),
+        };
+
+        let result = if stats_ptr.is_null() {
+            bitcoin_pqc_sign(
+                secret_key_bytes.as_ptr(),
+                secret_key_bytes.len(),
+                message.as_ptr(),
+                message.len(),
+                &mut signature,
+            )
+        } else {
+            bitcoin_pqc_sign_with_stats(
+                secret_key_bytes.as_ptr(),
+                secret_key_bytes.len(),
+                message.as_ptr(),
+                message.len(),
+                &mut signature,
+                stats_ptr,
+            )
+        };
+
+        if result != bitcoin_pqc_error_t_BITCOIN_PQC_OK {
+            let mapped_stats = stats.as_ref().map(|stats| SigningStats::from_raw(stats));
+            bitcoin_pqc_signature_free(&mut signature);
+            return Err(SignInnerError {
+                error: pqc_error_from_code(result),
+                stats: mapped_stats,
+            });
+        }
+
+        let sig_slice =
+            std::slice::from_raw_parts(signature.signature as *const u8, signature.signature_size);
+        let sig = Signature {
+            bytes: sig_slice.to_vec(),
+        };
+        let mapped_stats = stats.as_ref().map(|stats| SigningStats::from_raw(stats));
+
+        bitcoin_pqc_signature_free(&mut signature);
+
+        Ok((sig, mapped_stats))
+    }
+}
+
 pub fn verify(
     public_key: &PublicKey,
     message: &[u8],
     signature: &Signature,
 ) -> Result<(), PqcError> {
-    // Ensure the key and signature algorithms match
-    if public_key.algorithm != signature.algorithm {
-        return Err(PqcError::AlgorithmMismatch);
+    if public_key.bytes.len() != public_key_size() {
+        return Err(PqcError::BadKey);
     }
 
-    match public_key.algorithm {
-        Algorithm::SECP256K1_SCHNORR => {
-            // For Secp256k1, message must be a 32-byte hash
-            let required_size = 32;
+    if signature.bytes.len() != signature_size() {
+        return Err(PqcError::BadSignature);
+    }
 
-            // Check if message is too short
-            if message.len() < required_size {
-                return Err(PqcError::InsufficientData);
-            }
-
-            // Use only the first 32 bytes if message is longer
-            let msg_data = &message[..required_size];
-
-            // Use secp256k1 library for verification
-            let secp = Secp256k1::<secp256k1::VerifyOnly>::verification_only();
-            let pk = public_key.secp256k1_key()?;
-            let sig = signature.secp256k1_signature()?;
-
-            // Verify using verify_schnorr with the (potentially truncated) message slice
-            secp.verify_schnorr(&sig, msg_data, &pk)
-                .map_err(PqcError::Secp256k1Error)
-        }
-        pqc_alg => {
-            // Length check for public key (still useful)
-            if public_key.bytes.len() != public_key_size(pqc_alg) {
-                return Err(PqcError::BadKey);
-            }
-
-            // NOTE: We do NOT check the signature length here against signature_size(pqc_alg)
-            // because some algorithms like FN-DSA have variable signature lengths.
-            // The C library's verify function should handle invalid lengths internally.
-
-            // PQC Verification logic using FFI
-            unsafe {
-                let result = bitcoin_pqc_verify(
-                    pqc_alg.into(),
-                    public_key.bytes.as_ptr(),
-                    public_key.bytes.len(),
-                    message.as_ptr(),
-                    message.len(),
-                    signature.bytes.as_ptr(),
-                    signature.bytes.len(),
-                );
-                result.into() // Converts C error enum to Result<(), PqcError>
-            }
-        }
+    unsafe {
+        let result = bitcoin_pqc_verify(
+            public_key.bytes.as_ptr(),
+            public_key.bytes.len(),
+            message.as_ptr(),
+            message.len(),
+            signature.bytes.as_ptr(),
+            signature.bytes.len(),
+        );
+        map_error(result)
     }
 }
 
-/// Get the public key size for an algorithm
-///
-/// # Arguments
-///
-/// * `algorithm` - The algorithm to get the size for
-///
-/// # Returns
-///
-/// The size in bytes
-pub fn public_key_size(algorithm: Algorithm) -> usize {
-    if algorithm == Algorithm::SECP256K1_SCHNORR {
-        32 // XOnlyPublicKey size
+pub fn public_key_size() -> usize {
+    unsafe { bitcoin_pqc_public_key_size() }
+}
+
+pub fn secret_key_size() -> usize {
+    unsafe { bitcoin_pqc_secret_key_size() }
+}
+
+pub fn signature_size() -> usize {
+    unsafe { bitcoin_pqc_signature_size() }
+}
+
+/// Test-only WOTS+C parameter snapshot for the compiled bounded30 profile.
+#[cfg(feature = "test-helpers")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WotscParams {
+    pub n: u32,
+    pub w: u32,
+    pub logw: u32,
+    pub len1: u32,
+    pub len2: u32,
+    pub len: u32,
+    pub target: u32,
+    pub wots_bytes: u32,
+    pub wots_pk_bytes: u32,
+    pub fors_bytes: u32,
+    pub d: u32,
+    pub tree_height: u32,
+    pub auth_path_bytes: u32,
+    pub signature_bytes: u32,
+}
+
+/// Test-only WOTS+C derivation details from the C implementation.
+#[cfg(feature = "test-helpers")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WotscDerivation {
+    pub compressed_message: Vec<u8>,
+    pub chain_lengths: Vec<u32>,
+    pub counter: u32,
+    pub checksum: u32,
+}
+
+/// Test-only WOTS+C hash-at-counter result from the C implementation.
+#[cfg(feature = "test-helpers")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WotscCounterHash {
+    pub compressed_message: Vec<u8>,
+    pub checksum: u32,
+}
+
+#[cfg(feature = "test-helpers")]
+extern "C" {
+    fn bitcoin_pqc_test_message_to_indices(
+        indices_out: *mut u32,
+        mhash: *const u8,
+        mhash_len: usize,
+    ) -> i32;
+
+    fn bitcoin_pqc_test_forsc_compressed_index(mhash: *const u8, mhash_len: usize) -> u32;
+
+    fn bitcoin_pqc_test_compressed_index(
+        sig: *const u8,
+        sig_len: usize,
+        pk: *const u8,
+        pk_len: usize,
+        msg: *const u8,
+        msg_len: usize,
+    ) -> u32;
+
+    fn bitcoin_pqc_test_wotsc_params(params: *mut WotscParams) -> i32;
+
+    fn bitcoin_pqc_test_wotsc_hash_counter(
+        compressed_msg: *mut u8,
+        compressed_msg_len: usize,
+        checksum_out: *mut u32,
+        msg: *const u8,
+        msg_len: usize,
+        counter: u32,
+    ) -> i32;
+
+    fn bitcoin_pqc_test_wotsc_derive(
+        compressed_msg: *mut u8,
+        compressed_msg_len: usize,
+        lengths_out: *mut u32,
+        lengths_len: usize,
+        counter_out: *mut u32,
+        checksum_out: *mut u32,
+        msg: *const u8,
+        msg_len: usize,
+    ) -> i32;
+
+    fn bitcoin_pqc_test_wotsc_derive_with_limit(
+        compressed_msg: *mut u8,
+        compressed_msg_len: usize,
+        lengths_out: *mut u32,
+        lengths_len: usize,
+        counter_out: *mut u32,
+        checksum_out: *mut u32,
+        msg: *const u8,
+        msg_len: usize,
+        max_counter: u32,
+    ) -> i32;
+
+    fn bitcoin_pqc_test_seed_keypair_with_prefilled_root_tail(
+        pk: *mut u8,
+        pk_len: usize,
+        sk: *mut u8,
+        sk_len: usize,
+        root_tail_prefill: u8,
+        stats: *mut bitcoin_pqc_sign_stats_t,
+    ) -> i32;
+}
+
+/// Test helper: extract FORS tree indices from a message hash via the C implementation.
+/// Returns `None` on invalid input, or `Some(indices)` with 7 u32 values.
+#[cfg(feature = "test-helpers")]
+pub fn test_message_to_indices(mhash: &[u8]) -> Option<Vec<u32>> {
+    if mhash.len() < 16 {
+        return None;
+    }
+    let mut indices = vec![0u32; 7];
+    let rc = unsafe {
+        bitcoin_pqc_test_message_to_indices(indices.as_mut_ptr(), mhash.as_ptr(), mhash.len())
+    };
+    if rc == 0 {
+        Some(indices)
     } else {
-        unsafe { bitcoin_pqc_public_key_size(algorithm.into()) }
+        None
     }
 }
 
-/// Get the secret key size for an algorithm
-///
-/// # Arguments
-///
-/// * `algorithm` - The algorithm to get the size for
-///
-/// # Returns
-///
-/// The size in bytes
-pub fn secret_key_size(algorithm: Algorithm) -> usize {
-    if algorithm == Algorithm::SECP256K1_SCHNORR {
-        32 // secp256k1::SecretKey size
+/// Test helper: extract the compressed FORS tree index from a message hash.
+/// Returns `None` on invalid input.
+#[cfg(feature = "test-helpers")]
+pub fn test_forsc_compressed_index(mhash: &[u8]) -> Option<u32> {
+    if mhash.len() < 16 {
+        return None;
+    }
+    let idx = unsafe { bitcoin_pqc_test_forsc_compressed_index(mhash.as_ptr(), mhash.len()) };
+    if idx == u32::MAX {
+        None
     } else {
-        unsafe { bitcoin_pqc_secret_key_size(algorithm.into()) }
+        Some(idx)
     }
 }
 
-/// Get the signature size for an algorithm
-///
-/// # Arguments
-///
-/// * `algorithm` - The algorithm to get the size for
-///
-/// # Returns
-///
-/// The size in bytes
-pub fn signature_size(algorithm: Algorithm) -> usize {
-    if algorithm == Algorithm::SECP256K1_SCHNORR {
-        64 // schnorr::Signature size
+/// Test helper: run the hash_message -> compressed index pipeline for a signature tuple.
+/// Returns `None` on invalid input.
+#[cfg(feature = "test-helpers")]
+pub fn test_compressed_index(sig: &[u8], pk: &[u8], msg: &[u8]) -> Option<u32> {
+    let idx = unsafe {
+        bitcoin_pqc_test_compressed_index(
+            sig.as_ptr(),
+            sig.len(),
+            pk.as_ptr(),
+            pk.len(),
+            msg.as_ptr(),
+            msg.len(),
+        )
+    };
+    if idx == u32::MAX {
+        None
     } else {
-        unsafe { bitcoin_pqc_signature_size(algorithm.into()) }
+        Some(idx)
+    }
+}
+
+/// Test helper: return WOTS+C constants from the compiled C parameter set.
+#[cfg(feature = "test-helpers")]
+pub fn test_wotsc_params() -> Option<WotscParams> {
+    let mut params = WotscParams::default();
+    let rc = unsafe { bitcoin_pqc_test_wotsc_params(&mut params) };
+    if rc == 0 {
+        Some(params)
+    } else {
+        None
+    }
+}
+
+/// Test helper: hash a WOTS+C message with an explicit two-byte counter.
+#[cfg(feature = "test-helpers")]
+pub fn test_wotsc_hash_counter(msg: &[u8], counter: u32) -> Option<WotscCounterHash> {
+    let params = test_wotsc_params()?;
+    if msg.len() != params.n as usize {
+        return None;
+    }
+
+    let mut compressed_message = vec![0u8; params.n as usize];
+    let mut checksum = 0u32;
+    let rc = unsafe {
+        bitcoin_pqc_test_wotsc_hash_counter(
+            compressed_message.as_mut_ptr(),
+            compressed_message.len(),
+            &mut checksum,
+            msg.as_ptr(),
+            msg.len(),
+            counter,
+        )
+    };
+
+    if rc == 0 {
+        Some(WotscCounterHash {
+            compressed_message,
+            checksum,
+        })
+    } else {
+        None
+    }
+}
+
+/// Test helper: run WOTS+C counter search and return the derived chain lengths.
+#[cfg(feature = "test-helpers")]
+pub fn test_wotsc_derive(msg: &[u8]) -> Option<WotscDerivation> {
+    let params = test_wotsc_params()?;
+    if msg.len() != params.n as usize {
+        return None;
+    }
+
+    let mut compressed_message = vec![0u8; params.n as usize];
+    let mut chain_lengths = vec![0u32; params.len1 as usize];
+    let mut counter = 0u32;
+    let mut checksum = 0u32;
+    let rc = unsafe {
+        bitcoin_pqc_test_wotsc_derive(
+            compressed_message.as_mut_ptr(),
+            compressed_message.len(),
+            chain_lengths.as_mut_ptr(),
+            chain_lengths.len(),
+            &mut counter,
+            &mut checksum,
+            msg.as_ptr(),
+            msg.len(),
+        )
+    };
+
+    if rc == 0 {
+        Some(WotscDerivation {
+            compressed_message,
+            chain_lengths,
+            counter,
+            checksum,
+        })
+    } else {
+        None
+    }
+}
+
+/// Test helper: run WOTS+C counter search with an inclusive counter limit.
+#[cfg(feature = "test-helpers")]
+pub fn test_wotsc_derive_with_limit(msg: &[u8], max_counter: u32) -> Option<WotscDerivation> {
+    let params = test_wotsc_params()?;
+    if msg.len() != params.n as usize || max_counter > 0xFFFF {
+        return None;
+    }
+
+    let mut compressed_message = vec![0u8; params.n as usize];
+    let mut chain_lengths = vec![0u32; params.len1 as usize];
+    let mut counter = 0u32;
+    let mut checksum = 0u32;
+    let rc = unsafe {
+        bitcoin_pqc_test_wotsc_derive_with_limit(
+            compressed_message.as_mut_ptr(),
+            compressed_message.len(),
+            chain_lengths.as_mut_ptr(),
+            chain_lengths.len(),
+            &mut counter,
+            &mut checksum,
+            msg.as_ptr(),
+            msg.len(),
+            max_counter,
+        )
+    };
+
+    if rc == 0 {
+        Some(WotscDerivation {
+            compressed_message,
+            chain_lengths,
+            counter,
+            checksum,
+        })
+    } else {
+        None
+    }
+}
+
+/// Test helper: run deterministic seed keygen after pre-filling the secret-key root slot.
+#[cfg(feature = "test-helpers")]
+pub fn test_seed_keypair_with_prefilled_root_tail(
+    root_tail_prefill: u8,
+) -> Option<(PublicKey, SecretKey, SigningStats)> {
+    let mut pk = vec![0u8; public_key_size()];
+    let mut sk = vec![0u8; secret_key_size()];
+    let mut stats = bitcoin_pqc_sign_stats_t {
+        forsc_attempts: 0,
+        forsc_max_attempts: 0,
+        wotsc_attempts: [0; BITCOIN_PQC_SIGN_WOTSC_LAYERS as usize],
+        wotsc_layer_count: 0,
+        wotsc_max_attempts: 0,
+        wotsc_max_observed_attempts: 0,
+        cap_exceeded: 0,
+    };
+
+    let rc = unsafe {
+        bitcoin_pqc_test_seed_keypair_with_prefilled_root_tail(
+            pk.as_mut_ptr(),
+            pk.len(),
+            sk.as_mut_ptr(),
+            sk.len(),
+            root_tail_prefill,
+            &mut stats,
+        )
+    };
+
+    if rc == 0 {
+        Some((
+            PublicKey { bytes: pk },
+            SecretKey::try_from_slice(&sk).ok()?,
+            SigningStats::from_raw(&stats),
+        ))
+    } else {
+        None
     }
 }

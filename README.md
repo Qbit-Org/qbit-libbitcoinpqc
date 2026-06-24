@@ -1,314 +1,305 @@
-# libbitcoinpqc
+# qbit-libbitcoinpqc
 
-A C library, with Rust bindings, for Post-Quantum Cryptographic (PQC) signature algorithms. This library implements two NIST PQC standard signature algorithms for use with [BIP-360](https://github.com/cryptoquick/bips/blob/p2qrh/bip-0360.mediawiki) and the Bitcoin QuBit soft fork:
+`qbit-libbitcoinpqc` is a qbit-focused fork of `libbitcoinpqc`.
 
-1. **ML-DSA-44** (formerly CRYSTALS-Dilithium): A structured lattice-based digital signature scheme that is part of the NIST PQC standardization.
-2. **SLH-DSA-Shake-128s** (formerly SPHINCS+): A stateless hash-based signature scheme with minimal security assumptions.
+It is not a general-purpose multi-algorithm signature library. This fork is maintained for the qbit profile and consensus integration work only.
 
-Notice that all PQC signature algorithms used are certified according to the Federal Information Processing Standards, or FIPS. This should help in the future with native hardware support.
+## Profile Status
 
-## Bitcoin QuBit Integration
+- Active profile: bounded SLH-DSA-SHA2-128s-bounded30 for qbit.
+- API selection is intentionally constrained in qbit integrations.
+- The public API is single-profile and does not take an algorithm selector.
 
-This library serves as the cryptographic foundation for the Bitcoin QuBit soft fork, which aims to make Bitcoin's signature verification quantum-resistant through the implementation of BIP-360. QuBit introduces new post-quantum secure transaction types that can protect Bitcoin from potential threats posed by quantum computers.
+## Production-Supported Surfaces
 
-## Features
+For the current hardening cycle, the production-supported release surfaces are:
 
-- Clean, unified C API for all three signature algorithms
-- Safe Rust bindings with memory safety and zero-copy operations
-- NodeJS TypeScript bindings with full type safety
-- Python bindings for easy integration
-- User-provided entropy (bring your own randomness)
-- Key generation, signing, and verification functions
-- Minimal dependencies
+- The native C API.
+- The Rust crate API.
 
-## Key Characteristics
+These are the surfaces used for qbit production integration, release criteria,
+security review, and production packaging in this cycle. The public source tree
+does not include Python or Node.js binding packages.
 
-| Algorithm | Public Key Size | Secret Key Size | Signature Size | Security Level |
-|-----------|----------------|----------------|----------------|----------------|
-| secp256k1 | 32 bytes | 32 bytes | 64 bytes | Classical |
-| ML-DSA-44 | 1,312 bytes | 2,528 bytes | 2,420 bytes | NIST Level 2 |
-| SLH-DSA-SHAKE-128s | 32 bytes | 64 bytes | 7,856 bytes | NIST Level 1 |
+## Security Scope
 
-See [REPORT.md](benches/REPORT.md) for performance and size comparison to secp256k1.
+The reviewed hardening scope covers functional correctness, malformed input
+rejection, fuzz/sanitizer-backed memory-safety hardening, verification
+determinism, and avoiding obvious secret leaks. Deterministic signing is
+intentional under this policy, but it is not a side-channel-hardening
+guarantee.
 
-## Security Notes
+For the current qbit launch posture, production signing should run only in a
+trusted local wallet process, dedicated signing host, or comparably isolated
+key-custody environment. Do not claim signing support for hostile shared
+hardware, physical side-channel attackers, or fault injection from this release.
+Randomized or hedged signing is not exposed by the current API and is deferred
+to a separate explicit API and review track.
 
-- This library does not provide its own random number generation. It is essential that the user provide entropy from a cryptographically secure source.
-- Random data is required for key generation, but not for signing. All signatures are deterministic, based on the message and secret key.
-- The implementations are based on reference code from the NIST PQC standardization process and are not production-hardened.
-- Care should be taken to securely manage secret keys in applications.
+See [docs/side-channel-policy.md](docs/side-channel-policy.md) for the reviewed
+side-channel scope and deferred guarantees.
 
-## BIP-360 Compliance
+## Parameter Choices And Rationale
 
-This library implements the cryptographic primitives required by [BIP-360](https://github.com/bitcoin/bips/blob/master/bip-0360.mediawiki), which defines the standard for post-quantum resistant signatures in Bitcoin. It supports all three recommended algorithms with the specified parameter sets.
+qbit constrains signatures to a single bounded profile to simplify consensus validation and sizing.
 
-## License
+- Signature family: SLH-DSA-128s
+- Hash profile target: SHA-256 based profile for qbit planning and rollout
+- Active signing parameters:
+  - Hypertree: `h=30`, `d=5`
+  - FORS: `k=8`, `a=16`, FORS+C enabled (`k_sig = k-1 = 7`)
+  - WOTS+: `w=256`, WOTS+C enabled (`WOTS_LEN=16`)
+- Default signing caps:
+  - FORS+C salt grinding: `1,835,008` attempts (`28 * 65,536`)
+  - WOTS+C counter search: counter values `0` through `65,535`
+- Fixed sizes used by the current C ABI/profile:
+  - Public key: `32` bytes
+  - Secret key: `64` bytes
+  - Signature: `3680` bytes
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+Design rationale and rollout discussion are tracked in downstream integration notes.
 
-## Dependencies
+Parameter-sweep reproducibility script and output format:
+`docs/parameter-benchmark-sweep.md`
 
-Cryptographic dependencies included in this project:
+Platform support policy: `docs/platform-support.md`
+Performance evidence and regression policy: `docs/performance-policy.md`
 
-- https://github.com/sphincs/sphincsplus - `7ec789ace6874d875f4bb84cb61b81155398167e`
-- https://github.com/pq-crystals/dilithium - `444cdcc84eb36b66fe27b3a2529ee48f6d8150c2`
+## Performance Snapshot (Latest Recorded)
 
-## Building the Library
+Source: `cargo bench` output in `benches/REPORT.md` and `benches/benchmark-results.json`  
+Host/date: Apple M3 Max, `2026-02-14T01:23:33Z`
+
+| Operation | Latency (ms/op) | Throughput (ops/sec) |
+|---|---:|---:|
+| bounded_slh_dsa_sha2_128s keygen | 11.734108 | 85.22 |
+| bounded_slh_dsa_sha2_128s sign | 148.736574 | 6.72 |
+| bounded_slh_dsa_sha2_128s verify | 0.614708 | 1626.79 |
+
+Estimated verify-budget TPS thresholds (1% of 30s block, ideal scaling):
+- 1 thread: `16.27` TPS
+- 4 cores: `65.07` TPS
+- 8 cores: `130.14` TPS
+
+## Build
 
 ### Prerequisites
 
-- CMake 3.10 or higher
-- C99 compiler
-- Rust 1.50 or higher (for Rust bindings)
+- CMake 3.10+
+- C compiler with C99 support
+- Rust toolchain (`cargo`)
 
-### Building
+### Core Build Commands
 
 ```bash
-# Clone the repository
-git clone https://github.com/bitcoin/libbitcoinpqc.git
-cd libbitcoinpqc
+# Build C and Rust libraries
+make c-lib rust-lib
 
-# Build the C library using CMake
-mkdir build
-cd build
-cmake ..
-make
+# Run Rust tests
+cargo test
 
-# Build the Rust library and bindings
-cd ..
+# Run helper-dependent FORS invariant tests
+cargo test --features test-helpers --test forsc_invariant_tests
+
+# Run dependency advisory checks
+cargo audit
+```
+
+Alternative direct commands on Linux/macOS:
+
+```bash
+mkdir -p build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
 cargo build --release
 ```
 
-## Fuzz Testing
+Production builds ignore runtime SPHINCS+ backend environment knobs such as
+`SPX_SHA_BACKEND`, `SPX_DISABLE_SHA_ACCEL`, `SPX_DISABLE_SIMD`,
+`SPX_OPT_PROFILE`, and `SPX_FORS_THREADS`, and pin SHA hashblocks to the scalar
+backend. Test and benchmark builds can opt into those knobs explicitly for
+backend experiments; see
+`docs/runtime-crypto-env.md`.
 
-This library includes fuzz testing targets using [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz).
+### Windows (MSVC)
 
-### Prerequisites
+Windows support is currently validated in CI with a native MSVC toolchain.
+For this first wedge, MSVC stays on the scalar SPHINCS path; AVX2 SPHINCS
+sources are not enabled under MSVC yet.
+
+Prerequisites:
+
+- Visual Studio 2022 with the MSVC C/C++ toolchain
+- CMake 3.10+
+- Rust toolchain (`cargo`)
+- LLVM/Clang with `libclang` available for `bindgen`
+
+From a fresh checkout in an x64 Native Tools command prompt:
+
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release
+cargo build --verbose
+cargo test --verbose
+```
+
+That is the supported Windows path for now. Shared-library packaging and
+AVX2-on-MSVC runtime support are intentionally out of scope.
+
+## Fuzzing
+
+Fuzzing uses `cargo-fuzz` and LLVM/libFuzzer toolchains.
 
 ```bash
-# Install cargo-fuzz
-cargo install cargo-fuzz
+cargo install cargo-fuzz --locked
 ```
 
 ### Available Fuzz Targets
 
-1. **keypair_generation** - Tests key pair generation with different algorithms
-2. **sign_verify** - Tests signature creation and verification
-3. **cross_algorithm** - Tests verification with mismatched keys and signatures from different algorithms
+The authoritative fuzz inventory is maintained in `fuzz/Cargo.toml`.
+`./fuzz/run_all_fuzzers.sh --list` prints the target set used by the
+local and CI smoke helper.
 
 ### Running Fuzz Tests
 
 ```bash
+# Check fuzz inventory drift
+./fuzz/check_fuzz_inventory.sh
+
 # Run a specific fuzz target
-cargo fuzz run keypair_generation
-cargo fuzz run sign_verify
-cargo fuzz run cross_algorithm
+cargo +nightly fuzz run keypair_generation -- -runs=10000
+
+# List available fuzz targets
+./fuzz/run_all_fuzzers.sh --list
 
 # Run a fuzz target for a specific amount of time (in seconds)
-cargo fuzz run keypair_generation -- -max_total_time=60
+cargo +nightly fuzz run keypair_generation -- -max_total_time=60
 
-# Run a fuzz target with a specific number of iterations
-cargo fuzz run sign_verify -- -runs=1000000
+# Run all targets sequentially
+./fuzz/run_all_fuzzers.sh
+
+# Smoke the full inventory once
+./fuzz/run_all_fuzzers.sh -runs=1
 ```
 
 See `fuzz/README.md` for more details on fuzz testing.
 
-## C API Usage
+## C API Example
+
+C API ownership rules:
+
+- `bitcoin_pqc_keypair_t` and `bitcoin_pqc_signature_t` must be zero-initialized before passing them to `bitcoin_pqc_keygen` or `bitcoin_pqc_sign`.
+- Output structs may be reused only after the corresponding free function has been called.
+- Passing a nonzero or already-owned output struct to `bitcoin_pqc_keygen` or `bitcoin_pqc_sign` returns `BITCOIN_PQC_ERROR_BAD_ARG` and leaves the struct unchanged.
+- `bitcoin_pqc_keypair_free` and `bitcoin_pqc_signature_free` accept `NULL`, zeroize allocated buffers before release, reset pointers and sizes to zero, and are safe to call repeatedly on the same struct after the first free.
+- Zero-length messages are supported. At the C ABI boundary, `message` may be `NULL` only when `message_size == 0`.
+- Key generation uses caller-provided entropy. Signing is deterministic from
+  the secret key and message and does not request operating-system entropy.
+- Successful key generation returns a self-consistent generated pair. The
+  SLH-DSA secret key layout is `[SK_SEED || SK_PRF || PUB_SEED || root]`, the
+  public key layout is `[PUB_SEED || root]`, and the root is computed during
+  keygen. Trusted callers that immediately adopt same-call keygen output do not
+  need to call the secret-key validator only to recompute that root.
+- `slh_dsa_secret_key_validate` and `bitcoin_pqc_secret_key_validate` are for
+  imported, deserialized, or otherwise untrusted exact-size secret material
+  before it is accepted.
+- The internal SPHINCS+ `randombytes` hook aborts with a fatal diagnostic if it
+  is invoked without configured deterministic/caller-provided randomness and
+  operating-system entropy is unavailable; it never substitutes all-zero bytes
+  as successful randomness.
 
 ```c
 #include <libbitcoinpqc/bitcoinpqc.h>
 
-// Generate random data (from a secure source in production)
 uint8_t random_data[256];
-// Fill random_data with entropy...
+/* Fill random_data with cryptographically secure entropy */
 
-// Generate a key pair
-bitcoin_pqc_keypair_t keypair;
-bitcoin_pqc_keygen(BITCOIN_PQC_MLDSA44, &keypair, random_data, sizeof(random_data));
+bitcoin_pqc_keypair_t keypair = {0};
+bitcoin_pqc_error_t rc = bitcoin_pqc_keygen(
+    &keypair,
+    random_data,
+    sizeof(random_data)
+);
+if (rc != BITCOIN_PQC_OK) {
+    bitcoin_pqc_keypair_free(&keypair);
+    return;
+}
 
-// Sign a message
 const uint8_t message[] = "Message to sign";
-bitcoin_pqc_signature_t signature;
-bitcoin_pqc_sign(BITCOIN_PQC_MLDSA44, keypair.secret_key, keypair.secret_key_size,
-                message, sizeof(message) - 1, &signature);
+bitcoin_pqc_signature_t signature = {0};
+rc = bitcoin_pqc_sign(
+    (const uint8_t *)keypair.secret_key,
+    keypair.secret_key_size,
+    message,
+    sizeof(message) - 1,
+    &signature
+);
 
-// Verify the signature
-bitcoin_pqc_error_t result = bitcoin_pqc_verify(BITCOIN_PQC_MLDSA44,
-                                             keypair.public_key, keypair.public_key_size,
-                                             message, sizeof(message) - 1,
-                                             signature.signature, signature.signature_size);
+if (rc == BITCOIN_PQC_OK) {
+    rc = bitcoin_pqc_verify(
+        (const uint8_t *)keypair.public_key,
+        keypair.public_key_size,
+        message,
+        sizeof(message) - 1,
+        signature.signature,
+        signature.signature_size
+    );
+}
 
-// Clean up resources
 bitcoin_pqc_signature_free(&signature);
 bitcoin_pqc_keypair_free(&keypair);
 ```
 
-## Rust API Usage
+`bitcoin_pqc_keypair_t` and `bitcoin_pqc_signature_t` outputs must be
+zero-initialized before first use. Call the matching free function before
+reusing an output struct; the free functions reset fields to zero and are safe
+to call on zeroed structs or structs returned by this library. Key generation
+requires at least 128 bytes of caller-provided entropy, and all provided bytes
+are mixed into the internal SLH-DSA seed with domain separation and
+input-length binding. Successful key generation returns a self-consistent
+public/secret pair, and trusted callers may adopt that same-call output without
+immediately revalidating the secret-key root. Validation remains required for
+imported, deserialized, or otherwise untrusted exact-size secret material.
+Signing is deterministic from the secret key and message, so normal signing
+does not depend on operating-system entropy. The library cannot clear
+caller-owned entropy buffers; callers should protect and zeroize those buffers
+after key generation when they contain sensitive seed material. For signing and
+verification, `message == NULL` is valid only when `message_size == 0`.
 
-Rust docs can be found on [docs.rs](https://docs.rs/bitcoinpqc/latest/bitcoinpqc/).
+## Rust API Example
 
 ```rust
-use bitcoinpqc::{Algorithm, generate_keypair, sign, verify};
-use rand::{RngCore, rngs::OsRng};
+use bitcoinpqc::{generate_keypair, sign, verify};
 
-// Generate random data for key generation
 let mut random_data = vec![0u8; 128];
-OsRng.fill_bytes(&mut random_data);
+getrandom::fill(&mut random_data).unwrap();
 
-// Generate a key pair
-let keypair = generate_keypair(Algorithm::MLDSA44, &random_data).unwrap();
-
-// Create a message to sign
+let keypair = generate_keypair(&random_data).unwrap();
 let message = b"Message to sign";
-
-// Sign the message deterministically
 let signature = sign(&keypair.secret_key, message).unwrap();
-
-// Verify the signature
 verify(&keypair.public_key, message, &signature).unwrap();
 ```
 
-## Python API Usage
+`SecretKey` keeps its bytes private. Normal callers should parse secret keys
+with `SecretKey::try_from_slice` or `SecretKey::from_str` and pass them to
+`sign`. `SecretKey::as_secret_bytes()` is the explicitly named escape hatch for
+raw key export or interoperability code; do not log, serialize, or retain copies
+of that data unless the calling protocol requires it.
 
-[Python bindings are also available for libbitcoinpqc](https://pypi.org/project/bitcoinpqc/0.1.0/), allowing you to use the post-quantum cryptographic algorithms from Python code.
+The Rust `serde` feature serializes/deserializes public keys and signatures
+only. Secret key and whole `KeyPair` serde support requires the explicit
+`secret-key-serde` feature because it emits raw secret key material as hex.
 
-### Installation
+## Versioning And Release Checks
 
-```bash
-# Install the Python package
-cd python
-pip install -e .
-```
+Rust and CMake package metadata currently identify the core library as `0.3.0`.
 
-### Prerequisites
+Release readiness and supply-chain validation are tracked in:
 
-- Python 3.7 or higher
-- The libbitcoinpqc C library must be built and installed
+- `docs/public-release-surface.md`
+- `docs/versioning-and-supply-chain.md`
+- `docs/release-checklist.md`
 
-### Example Usage
+## License
 
-```python
-import secrets
-from bitcoinpqc import Algorithm, keygen, sign, verify
-
-# Generate random data for key generation
-random_data = secrets.token_bytes(128)
-
-# Generate a key pair
-algorithm = Algorithm.ML_DSA_44  # CRYSTALS-Dilithium
-keypair = keygen(algorithm, random_data)
-
-# Create a message to sign
-message = b"Hello, Bitcoin PQC!"
-
-# Sign the message
-signature = sign(algorithm, keypair.secret_key, message)
-
-# Verify the signature
-is_valid = verify(algorithm, keypair.public_key, message, signature)
-print(f"Signature valid: {is_valid}")  # Should print True
-
-# Verification with incorrect message will fail
-bad_message = b"Tampered message!"
-is_valid = verify(algorithm, keypair.public_key, bad_message, signature)
-print(f"Signature valid: {is_valid}")  # Should print False
-```
-
-### Python API Reference
-
-The Python API mirrors the C API closely, with some Pythonic improvements:
-
-- **Algorithm** - Enum class for algorithm selection
-  - `SECP256K1_SCHNORR`
-  - `ML_DSA_44` (CRYSTALS-Dilithium)
-  - `SLH_DSA_SHAKE_128S` (SPHINCS+)
-
-- **KeyPair** - Class to hold a public/secret key pair
-  - `algorithm` - The algorithm used
-  - `public_key` - The public key as bytes
-  - `secret_key` - The secret key as bytes
-
-- **Signature** - Class to hold a signature
-  - `algorithm` - The algorithm used
-  - `signature` - The signature as bytes
-
-- **Functions**
-  - `public_key_size(algorithm)` - Get the public key size for an algorithm
-  - `secret_key_size(algorithm)` - Get the secret key size for an algorithm
-  - `signature_size(algorithm)` - Get the signature size for an algorithm
-  - `keygen(algorithm, random_data)` - Generate a key pair
-  - `sign(algorithm, secret_key, message)` - Sign a message
-  - `verify(algorithm, public_key, message, signature)` - Verify a signature
-
-## NodeJS TypeScript API Usage
-
-[NodeJS TypeScript bindings](https://www.npmjs.com/package/bitcoinpqc) allow you to use post-quantum cryptographic algorithms in JavaScript/TypeScript projects.
-
-### Installation
-
-```bash
-# Install the Node.js package
-npm install bitcoinpqc
-```
-
-### Prerequisites
-
-- Node.js 16 or higher
-- The libbitcoinpqc C library must be built and installed
-
-### Example Usage
-
-```typescript
-import { Algorithm, generateKeyPair, sign, verify } from 'bitcoinpqc';
-import crypto from 'crypto';
-
-// Generate random data for key generation
-const randomData = crypto.randomBytes(128);
-
-// Generate a key pair using ML-DSA-44 (CRYSTALS-Dilithium)
-const keypair = generateKeyPair(Algorithm.ML_DSA_44, randomData);
-
-// Create a message to sign
-const message = Buffer.from('Message to sign');
-
-// Sign the message deterministically
-const signature = sign(keypair.secretKey, message);
-
-// Verify the signature
-verify(keypair.publicKey, message, signature);
-// If verification fails, it will throw a PqcError
-
-// You can also verify using the raw signature bytes
-verify(keypair.publicKey, message, signature.bytes);
-```
-
-### NodeJS TypeScript API Reference
-
-The TypeScript API provides a clean, modern interface:
-
-- **Algorithm** - Enum for algorithm selection
-  - `SECP256K1_SCHNORR`
-  - `ML_DSA_44` (CRYSTALS-Dilithium)
-  - `SLH_DSA_SHAKE_128S` (SPHINCS+)
-
-- **Classes**
-  - `PublicKey` - Public key wrapper
-  - `SecretKey` - Secret key wrapper with secure handling
-  - `KeyPair` - Container for public/secret key pairs
-  - `Signature` - Signature wrapper
-
-- **Functions**
-  - `publicKeySize(algorithm)` - Get the public key size for an algorithm
-  - `secretKeySize(algorithm)` - Get the secret key size for an algorithm
-  - `signatureSize(algorithm)` - Get the signature size for an algorithm
-  - `generateKeyPair(algorithm, randomData)` - Generate a key pair
-  - `sign(secretKey, message)` - Sign a message
-  - `verify(publicKey, message, signature)` - Verify a signature
-
-For more details, see the [NodeJS TypeScript bindings README](nodejs/README.md).
-
-## Acknowledgments
-
-- The original NIST PQC competition teams for their reference implementations
-- The NIST PQC standardization process for advancing post-quantum cryptography
-- The Bitcoin QuBit soft fork contributors and BIP-360 contributors
+MIT. See `LICENSE`.

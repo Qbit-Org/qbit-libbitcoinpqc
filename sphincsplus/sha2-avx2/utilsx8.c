@@ -92,7 +92,7 @@ void treehashx8(unsigned char *root, unsigned char *auth_path,
              * Check if one of the nodes we have is a part of the
              * authentication path; if it is, write it out
              */
-            if ((((internal_idx << 3) ^ internal_leaf) & ~0x7) == 0) {
+            if ((((internal_idx << 3) ^ internal_leaf) & ~UINT32_C(0x7)) == 0) {
                 memcpy( &auth_path[ h * SPX_N ],
                         &current[(((internal_leaf&7)^1) + prev_left_adj) * SPX_N],
                         SPX_N );
@@ -115,9 +115,11 @@ void treehashx8(unsigned char *root, unsigned char *auth_path,
             int j;
             internal_idx_offset >>= 1;
             for (j = 0; j < 8; j++) {
+                const int64_t tree_index =
+                    (int64_t)4 * (int64_t)(internal_idx & ~UINT32_C(1)) +
+                    (int64_t)j - (int64_t)left_adj + (int64_t)internal_idx_offset;
                 set_tree_height(tree_addrx8 + j*8, h + 1);
-                set_tree_index(tree_addrx8 + j*8,
-                     (8/2) * (internal_idx&~1) + j - left_adj + internal_idx_offset );
+                set_tree_index(tree_addrx8 + j*8, (uint32_t)tree_index);
             }
             unsigned char *left = &stackx8[h * 8 * SPX_N];
             thashx8( &current[0 * SPX_N],

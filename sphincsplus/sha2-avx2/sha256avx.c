@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "sha256avx.h"
+#include "utils.h"
 
 // Transpose 8 vectors containing 32-bit values
 void transpose(u256 s[8]) {
@@ -35,14 +36,14 @@ void transpose(u256 s[8]) {
 }
 
 void sha256_init8x(sha256ctx *ctx) {
-    ctx->s[0] = _mm256_set_epi32(0x6a09e667,0x6a09e667,0x6a09e667,0x6a09e667,0x6a09e667,0x6a09e667,0x6a09e667,0x6a09e667);
-    ctx->s[1] = _mm256_set_epi32(0xbb67ae85,0xbb67ae85,0xbb67ae85,0xbb67ae85,0xbb67ae85,0xbb67ae85,0xbb67ae85,0xbb67ae85);
-    ctx->s[2] = _mm256_set_epi32(0x3c6ef372,0x3c6ef372,0x3c6ef372,0x3c6ef372,0x3c6ef372,0x3c6ef372,0x3c6ef372,0x3c6ef372);
-    ctx->s[3] = _mm256_set_epi32(0xa54ff53a,0xa54ff53a,0xa54ff53a,0xa54ff53a,0xa54ff53a,0xa54ff53a,0xa54ff53a,0xa54ff53a);
-    ctx->s[4] = _mm256_set_epi32(0x510e527f,0x510e527f,0x510e527f,0x510e527f,0x510e527f,0x510e527f,0x510e527f,0x510e527f);
-    ctx->s[5] = _mm256_set_epi32(0x9b05688c,0x9b05688c,0x9b05688c,0x9b05688c,0x9b05688c,0x9b05688c,0x9b05688c,0x9b05688c);
-    ctx->s[6] = _mm256_set_epi32(0x1f83d9ab,0x1f83d9ab,0x1f83d9ab,0x1f83d9ab,0x1f83d9ab,0x1f83d9ab,0x1f83d9ab,0x1f83d9ab);
-    ctx->s[7] = _mm256_set_epi32(0x5be0cd19,0x5be0cd19,0x5be0cd19,0x5be0cd19,0x5be0cd19,0x5be0cd19,0x5be0cd19,0x5be0cd19);
+    ctx->s[0] = _mm256_set1_epi32(U32_TO_I32(UINT32_C(0x6a09e667)));
+    ctx->s[1] = _mm256_set1_epi32(U32_TO_I32(UINT32_C(0xbb67ae85)));
+    ctx->s[2] = _mm256_set1_epi32(U32_TO_I32(UINT32_C(0x3c6ef372)));
+    ctx->s[3] = _mm256_set1_epi32(U32_TO_I32(UINT32_C(0xa54ff53a)));
+    ctx->s[4] = _mm256_set1_epi32(U32_TO_I32(UINT32_C(0x510e527f)));
+    ctx->s[5] = _mm256_set1_epi32(U32_TO_I32(UINT32_C(0x9b05688c)));
+    ctx->s[6] = _mm256_set1_epi32(U32_TO_I32(UINT32_C(0x1f83d9ab)));
+    ctx->s[7] = _mm256_set1_epi32(U32_TO_I32(UINT32_C(0x5be0cd19)));
     
     ctx->datalen = 0;
     ctx->msglen = 0;
@@ -93,14 +94,7 @@ void sha256_final8x(sha256ctx *ctx,
     // Add length of the message to each block
     ctx->msglen += ctx->datalen * 8;
     for (i = 0; i < 8; i++) {
-        ctx->msgblocks[64*i + 63] = ctx->msglen;
-        ctx->msgblocks[64*i + 62] = ctx->msglen >> 8;
-        ctx->msgblocks[64*i + 61] = ctx->msglen >> 16;
-        ctx->msgblocks[64*i + 60] = ctx->msglen >> 24;
-        ctx->msgblocks[64*i + 59] = ctx->msglen >> 32;
-        ctx->msgblocks[64*i + 58] = ctx->msglen >> 40;
-        ctx->msgblocks[64*i + 57] = ctx->msglen >> 48;
-        ctx->msgblocks[64*i + 56] = ctx->msglen >> 56;
+        ull_to_bytes(&ctx->msgblocks[64*i + 56], 8, ctx->msglen);
     }
     sha256_transform8x(ctx,
         &ctx->msgblocks[64*0],

@@ -6,8 +6,26 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "opt_flags.h"
 #include "utils.h"
 #include "sha2.h"
+#include "sha2_armv8_sha.h"
+#include "sha2_x86_shani.h"
+
+#if defined(__APPLE__) && defined(__has_include)
+#if __has_include(<CommonCrypto/CommonDigest.h>)
+#include <CommonCrypto/CommonDigest.h>
+#define SPX_USE_COMMONCRYPTO_SHA2 1
+#endif
+#endif
+
+#if defined(__clang__) || defined(__GNUC__)
+#define SPX_SHA_ATOMIC_LOAD_PTR(ptr) __atomic_load_n((ptr), __ATOMIC_ACQUIRE)
+#define SPX_SHA_ATOMIC_STORE_PTR(ptr, value) __atomic_store_n((ptr), (value), __ATOMIC_RELEASE)
+#else
+#define SPX_SHA_ATOMIC_LOAD_PTR(ptr) (*(ptr))
+#define SPX_SHA_ATOMIC_STORE_PTR(ptr, value) (*(ptr) = (value))
+#endif
 
 static uint32_t load_bigendian_32(const uint8_t *x) {
     return (uint32_t)(x[3]) | (((uint32_t)(x[2])) << 8) |
@@ -49,9 +67,53 @@ static void store_bigendian_64(uint8_t *x, uint64_t u) {
     x[0] = (uint8_t) u;
 }
 
+/*
+ * SHA-2 arithmetic is defined modulo 2^32 / 2^64.
+ * Compute additions in wider intermediates to keep sanitizer-integer quiet.
+ */
+static inline uint32_t spx_add32(uint32_t lhs, uint32_t rhs)
+{
+    return (uint32_t)((uint64_t)lhs + (uint64_t)rhs);
+}
+
+static inline uint32_t spx_add32_4(uint32_t a, uint32_t b, uint32_t c, uint32_t d)
+{
+    return spx_add32(spx_add32(a, b), spx_add32(c, d));
+}
+
+static inline uint32_t spx_add32_5(uint32_t a, uint32_t b, uint32_t c,
+                                   uint32_t d, uint32_t e)
+{
+    return spx_add32(spx_add32_4(a, b, c, d), e);
+}
+
+static inline uint64_t spx_add64(uint64_t lhs, uint64_t rhs)
+{
+#if defined(__SIZEOF_INT128__)
+    return (uint64_t)(((__uint128_t)lhs) + ((__uint128_t)rhs));
+#else
+    uint64_t lo = (lhs & UINT64_C(0xffffffff)) + (rhs & UINT64_C(0xffffffff));
+    uint64_t hi = (lhs >> 32) + (rhs >> 32) + (lo >> 32);
+    return ((hi & UINT64_C(0xffffffff)) << 32) | (lo & UINT64_C(0xffffffff));
+#endif
+}
+
+static inline uint64_t spx_add64_4(uint64_t a, uint64_t b, uint64_t c, uint64_t d)
+{
+    return spx_add64(spx_add64(a, b), spx_add64(c, d));
+}
+
+static inline uint64_t spx_add64_5(uint64_t a, uint64_t b, uint64_t c,
+                                   uint64_t d, uint64_t e)
+{
+    return spx_add64(spx_add64_4(a, b, c, d), e);
+}
+
 #define SHR(x, c) ((x) >> (c))
-#define ROTR_32(x, c) (((x) >> (c)) | ((x) << (32 - (c))))
-#define ROTR_64(x,c) (((x) >> (c)) | ((x) << (64 - (c))))
+#define ROTR_32(x, c) \
+    (((x) >> (c)) | (((x) & ((((uint32_t)1) << (c)) - 1)) << (32 - (c))))
+#define ROTR_64(x, c) \
+    (((x) >> (c)) | (((x) & ((((uint64_t)1) << (c)) - 1)) << (64 - (c))))
 
 #define Ch(x, y, z) (((x) & (y)) ^ (~(x) & (z)))
 #define Maj(x, y, z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
@@ -66,8 +128,10 @@ static void store_bigendian_64(uint8_t *x, uint64_t u) {
 #define sigma0_64(x) (ROTR_64(x, 1) ^ ROTR_64(x, 8) ^ SHR(x,7))
 #define sigma1_64(x) (ROTR_64(x,19) ^ ROTR_64(x,61) ^ SHR(x,6))
 
-#define M_32(w0, w14, w9, w1) w0 = sigma1_32(w14) + (w9) + sigma0_32(w1) + (w0);
-#define M_64(w0, w14, w9, w1) w0 = sigma1_64(w14) + (w9) + sigma0_64(w1) + (w0);
+#define M_32(w0, w14, w9, w1) \
+    w0 = spx_add32_4(sigma1_32(w14), (w9), sigma0_32(w1), (w0));
+#define M_64(w0, w14, w9, w1) \
+    w0 = spx_add64_4(sigma1_64(w14), (w9), sigma0_64(w1), (w0));
 
 #define EXPAND_32           \
     M_32(w0, w14, w9, w1)   \
@@ -105,32 +169,32 @@ static void store_bigendian_64(uint8_t *x, uint64_t u) {
   M_64(w14,w12,w7 ,w15) \
   M_64(w15,w13,w8 ,w0 )
 
-#define F_32(w, k)                                   \
-    T1 = h + Sigma1_32(e) + Ch(e, f, g) + (k) + (w); \
-    T2 = Sigma0_32(a) + Maj(a, b, c);                \
-    h = g;                                           \
-    g = f;                                           \
-    f = e;                                           \
-    e = d + T1;                                      \
-    d = c;                                           \
-    c = b;                                           \
-    b = a;                                           \
-    a = T1 + T2;
-
-#define F_64(w,k) \
-    T1 = h + Sigma1_64(e) + Ch(e,f,g) + k + w; \
-    T2 = Sigma0_64(a) + Maj(a,b,c); \
+#define F_32(w, k) \
+    T1 = spx_add32_5(h, Sigma1_32(e), Ch(e, f, g), (uint32_t)(k), (w)); \
+    T2 = spx_add32(Sigma0_32(a), Maj(a, b, c)); \
     h = g; \
     g = f; \
     f = e; \
-    e = d + T1; \
+    e = spx_add32(d, T1); \
     d = c; \
     c = b; \
     b = a; \
-    a = T1 + T2;
+    a = spx_add32(T1, T2);
 
-static size_t crypto_hashblocks_sha256(uint8_t *statebytes,
-                                       const uint8_t *in, size_t inlen) {
+#define F_64(w,k) \
+    T1 = spx_add64_5(h, Sigma1_64(e), Ch(e,f,g), (k), (w)); \
+    T2 = spx_add64(Sigma0_64(a), Maj(a,b,c)); \
+    h = g; \
+    g = f; \
+    f = e; \
+    e = spx_add64(d, T1); \
+    d = c; \
+    c = b; \
+    b = a; \
+    a = spx_add64(T1, T2);
+
+static size_t crypto_hashblocks_sha256_ref(uint8_t *statebytes,
+                                           const uint8_t *in, size_t inlen) {
     uint32_t state[8];
     uint32_t a;
     uint32_t b;
@@ -252,14 +316,14 @@ static size_t crypto_hashblocks_sha256(uint8_t *statebytes,
         F_32(w14, 0xbef9a3f7)
         F_32(w15, 0xc67178f2)
 
-        a += state[0];
-        b += state[1];
-        c += state[2];
-        d += state[3];
-        e += state[4];
-        f += state[5];
-        g += state[6];
-        h += state[7];
+        a = spx_add32(a, state[0]);
+        b = spx_add32(b, state[1]);
+        c = spx_add32(c, state[2]);
+        d = spx_add32(d, state[3]);
+        e = spx_add32(e, state[4]);
+        f = spx_add32(f, state[5]);
+        g = spx_add32(g, state[6]);
+        h = spx_add32(h, state[7]);
 
         state[0] = a;
         state[1] = b;
@@ -286,7 +350,7 @@ static size_t crypto_hashblocks_sha256(uint8_t *statebytes,
     return inlen;
 }
 
-static int crypto_hashblocks_sha512(unsigned char *statebytes,const unsigned char *in,unsigned long long inlen)
+static int crypto_hashblocks_sha512_ref(unsigned char *statebytes,const unsigned char *in,unsigned long long inlen)
 {
   uint64_t state[8];
   uint64_t a;
@@ -420,14 +484,14 @@ static int crypto_hashblocks_sha512(unsigned char *statebytes,const unsigned cha
     F_64(w14,0x5fcb6fab3ad6faecULL)
     F_64(w15,0x6c44198c4a475817ULL)
 
-    a += state[0];
-    b += state[1];
-    c += state[2];
-    d += state[3];
-    e += state[4];
-    f += state[5];
-    g += state[6];
-    h += state[7];
+    a = spx_add64(a, state[0]);
+    b = spx_add64(b, state[1]);
+    c = spx_add64(c, state[2]);
+    d = spx_add64(d, state[3]);
+    e = spx_add64(e, state[4]);
+    f = spx_add64(f, state[5]);
+    g = spx_add64(g, state[6]);
+    h = spx_add64(h, state[7]);
   
     state[0] = a;
     state[1] = b;
@@ -451,7 +515,210 @@ static int crypto_hashblocks_sha512(unsigned char *statebytes,const unsigned cha
   store_bigendian_64(statebytes + 48,state[6]);
   store_bigendian_64(statebytes + 56,state[7]);
 
-  return inlen;
+  return (int)inlen;
+}
+
+#if defined(SPX_USE_COMMONCRYPTO_SHA2)
+static size_t spx_cc_sha256_hashblocks(uint8_t *statebytes, const uint8_t *in, size_t inlen)
+{
+    CC_SHA256_CTX ctx;
+    size_t i;
+    size_t full_bytes = inlen & ~((size_t)SPX_SHA256_BLOCK_BYTES - 1U);
+
+    if (full_bytes == 0) {
+        return inlen;
+    }
+
+    memset(&ctx, 0, sizeof(ctx));
+    for (i = 0; i < 8; ++i) {
+        ctx.hash[i] = (CC_LONG)load_bigendian_32(statebytes + 4 * i);
+    }
+    CC_SHA256_Update(&ctx, in, (CC_LONG)full_bytes);
+    for (i = 0; i < 8; ++i) {
+        store_bigendian_32(statebytes + 4 * i, (uint32_t)ctx.hash[i]);
+    }
+
+    return inlen - full_bytes;
+}
+
+static int spx_cc_sha512_hashblocks(unsigned char *statebytes,
+                                    const unsigned char *in,
+                                    unsigned long long inlen)
+{
+    CC_SHA512_CTX ctx;
+    size_t i;
+    size_t full_bytes = (size_t)inlen & ~((size_t)SPX_SHA512_BLOCK_BYTES - 1U);
+
+    if (full_bytes == 0) {
+        return (int)inlen;
+    }
+
+    memset(&ctx, 0, sizeof(ctx));
+    for (i = 0; i < 8; ++i) {
+        ctx.hash[i] = (CC_LONG64)load_bigendian_64(statebytes + 8 * i);
+    }
+    CC_SHA512_Update(&ctx, in, (CC_LONG)full_bytes);
+    for (i = 0; i < 8; ++i) {
+        store_bigendian_64(statebytes + 8 * i, (uint64_t)ctx.hash[i]);
+    }
+
+    return (int)(inlen - full_bytes);
+}
+#endif
+
+typedef size_t (*spx_sha256_hashblocks_impl_fn)(uint8_t *statebytes,
+                                                const uint8_t *in,
+                                                size_t inlen);
+typedef int (*spx_sha512_hashblocks_impl_fn)(unsigned char *statebytes,
+                                             const unsigned char *in,
+                                             unsigned long long inlen);
+
+static spx_sha256_hashblocks_impl_fn spx_sha256_hashblocks_impl = NULL;
+static spx_sha512_hashblocks_impl_fn spx_sha512_hashblocks_impl = NULL;
+
+static spx_sha256_hashblocks_impl_fn spx_sha256_select_hashblocks_impl(void)
+{
+    int mode = spx_opt_sha_backend_mode();
+
+    if (spx_opt_disable_sha_accel() || mode == SPX_SHA_BACKEND_SCALAR) {
+        return crypto_hashblocks_sha256_ref;
+    }
+
+#if defined(SPX_ENABLE_ARM_SHA)
+    if (mode == SPX_SHA_BACKEND_ARM) {
+        if (spx_sha2_arm_can_use_sha256()) {
+            return spx_sha2_arm_hashblocks_sha256;
+        }
+        return crypto_hashblocks_sha256_ref;
+    }
+#else
+    if (mode == SPX_SHA_BACKEND_ARM) {
+        return crypto_hashblocks_sha256_ref;
+    }
+#endif
+
+    if (mode == SPX_SHA_BACKEND_X86) {
+        if (spx_sha2_x86_can_use_sha256_ni()) {
+            return spx_sha2_x86_hashblocks_sha256;
+        }
+        return crypto_hashblocks_sha256_ref;
+    }
+
+    if (mode == SPX_SHA_BACKEND_COMMONCRYPTO) {
+#if defined(SPX_USE_COMMONCRYPTO_SHA2)
+        return spx_cc_sha256_hashblocks;
+#else
+        return crypto_hashblocks_sha256_ref;
+#endif
+    }
+
+    if (spx_sha2_x86_can_use_sha256_ni()) {
+        return spx_sha2_x86_hashblocks_sha256;
+    }
+
+#if defined(SPX_ENABLE_ARM_SHA)
+    if (spx_sha2_arm_can_use_sha256()) {
+        return spx_sha2_arm_hashblocks_sha256;
+    }
+#endif
+
+#if defined(SPX_USE_COMMONCRYPTO_SHA2)
+    return spx_cc_sha256_hashblocks;
+#else
+    return crypto_hashblocks_sha256_ref;
+#endif
+}
+
+static spx_sha512_hashblocks_impl_fn spx_sha512_select_hashblocks_impl(void)
+{
+    int mode = spx_opt_sha_backend_mode();
+
+    if (spx_opt_disable_sha_accel() || mode == SPX_SHA_BACKEND_SCALAR) {
+        return crypto_hashblocks_sha512_ref;
+    }
+
+#if defined(SPX_ENABLE_ARM_SHA)
+    if (mode == SPX_SHA_BACKEND_ARM) {
+        if (spx_sha2_arm_can_use_sha512()) {
+            return spx_sha2_arm_hashblocks_sha512;
+        }
+        return crypto_hashblocks_sha512_ref;
+    }
+#else
+    if (mode == SPX_SHA_BACKEND_ARM) {
+        return crypto_hashblocks_sha512_ref;
+    }
+#endif
+
+    if (mode == SPX_SHA_BACKEND_X86) {
+        if (spx_sha2_x86_can_use_sha512_ni()) {
+            return spx_sha2_x86_hashblocks_sha512;
+        }
+        return crypto_hashblocks_sha512_ref;
+    }
+
+    if (mode == SPX_SHA_BACKEND_COMMONCRYPTO) {
+#if defined(SPX_USE_COMMONCRYPTO_SHA2)
+        return spx_cc_sha512_hashblocks;
+#else
+        return crypto_hashblocks_sha512_ref;
+#endif
+    }
+
+    if (spx_sha2_x86_can_use_sha512_ni()) {
+        return spx_sha2_x86_hashblocks_sha512;
+    }
+
+#if defined(SPX_ENABLE_ARM_SHA)
+    if (spx_sha2_arm_can_use_sha512()) {
+        return spx_sha2_arm_hashblocks_sha512;
+    }
+#endif
+
+#if defined(SPX_USE_COMMONCRYPTO_SHA2)
+    return spx_cc_sha512_hashblocks;
+#else
+    return crypto_hashblocks_sha512_ref;
+#endif
+}
+
+static spx_sha256_hashblocks_impl_fn spx_sha256_get_hashblocks_impl(void)
+{
+    spx_sha256_hashblocks_impl_fn impl =
+        SPX_SHA_ATOMIC_LOAD_PTR(&spx_sha256_hashblocks_impl);
+
+    if (impl == NULL) {
+        impl = spx_sha256_select_hashblocks_impl();
+        SPX_SHA_ATOMIC_STORE_PTR(&spx_sha256_hashblocks_impl, impl);
+    }
+
+    return impl;
+}
+
+static spx_sha512_hashblocks_impl_fn spx_sha512_get_hashblocks_impl(void)
+{
+    spx_sha512_hashblocks_impl_fn impl =
+        SPX_SHA_ATOMIC_LOAD_PTR(&spx_sha512_hashblocks_impl);
+
+    if (impl == NULL) {
+        impl = spx_sha512_select_hashblocks_impl();
+        SPX_SHA_ATOMIC_STORE_PTR(&spx_sha512_hashblocks_impl, impl);
+    }
+
+    return impl;
+}
+
+static size_t crypto_hashblocks_sha256(uint8_t *statebytes,
+                                       const uint8_t *in, size_t inlen)
+{
+    return spx_sha256_get_hashblocks_impl()(statebytes, in, inlen);
+}
+
+static int crypto_hashblocks_sha512(unsigned char *statebytes,
+                                    const unsigned char *in,
+                                    unsigned long long inlen)
+{
+    return spx_sha512_get_hashblocks_impl()(statebytes, in, inlen);
 }
 
 
@@ -635,13 +902,13 @@ void mgf1_256(unsigned char *out, unsigned long outlen,
 
     /* While we can fit in at least another full block of SHA256 output.. */
     for (i = 0; (i+1)*SPX_SHA256_OUTPUT_BYTES <= outlen; i++) {
-        u32_to_bytes(inbuf + inlen, i);
+        u32_to_bytes(inbuf + inlen, (uint32_t)i);
         sha256(out, inbuf, inlen + 4);
         out += SPX_SHA256_OUTPUT_BYTES;
     }
     /* Until we cannot anymore, and we fill the remainder. */
     if (outlen > i*SPX_SHA256_OUTPUT_BYTES) {
-        u32_to_bytes(inbuf + inlen, i);
+        u32_to_bytes(inbuf + inlen, (uint32_t)i);
         sha256(outbuf, inbuf, inlen + 4);
         memcpy(out, outbuf, outlen - i*SPX_SHA256_OUTPUT_BYTES);
     }
@@ -661,13 +928,13 @@ void mgf1_512(unsigned char *out, unsigned long outlen,
 
     /* While we can fit in at least another full block of SHA512 output.. */
     for (i = 0; (i+1)*SPX_SHA512_OUTPUT_BYTES <= outlen; i++) {
-        u32_to_bytes(inbuf + inlen, i);
+        u32_to_bytes(inbuf + inlen, (uint32_t)i);
         sha512(out, inbuf, inlen + 4);
         out += SPX_SHA512_OUTPUT_BYTES;
     }
     /* Until we cannot anymore, and we fill the remainder. */
     if (outlen > i*SPX_SHA512_OUTPUT_BYTES) {
-        u32_to_bytes(inbuf + inlen, i);
+        u32_to_bytes(inbuf + inlen, (uint32_t)i);
         sha512(outbuf, inbuf, inlen + 4);
         memcpy(out, outbuf, outlen - i*SPX_SHA512_OUTPUT_BYTES);
     }

@@ -1,89 +1,45 @@
-# Post-Quantum Cryptography Benchmarks
+# qbit Profile Benchmarks
 
-This directory contains benchmarks for the post-quantum cryptography algorithms implemented in the library, as well as benchmarks for secp256k1 for comparison.
+This directory contains benchmark targets for the qbit single-profile surface.
 
-## Running All Benchmarks
+## Run Benchmarks
 
-To run all benchmarks:
-
-```
+```bash
 cargo bench
 ```
 
-## Running Algorithm-Specific Benchmarks
+Default benchmark builds use production-mode crypto dispatch and ignore runtime
+SPHINCS+ backend environment knobs. Backend attribution experiments must opt in:
 
-You can run benchmarks for a specific algorithm by using the filter option with `cargo bench`:
-
-### ML-DSA-44 (CRYSTALS-Dilithium)
-
-```
-cargo bench -- ml_dsa_44
+```bash
+cargo bench --features test-bench-env-knobs
 ```
 
-### SLH-DSA-128S (SPHINCS+)
+## Outputs
 
-```
-cargo bench -- slh_dsa_128s
-```
+- Human-readable report: `benches/REPORT.md`
+- Machine-readable JSON artifact: `benches/benchmark-results.json`
+- Raw Criterion output: `target/criterion/`
 
-### secp256k1 (for comparison)
+## Useful Filters
 
-```
-cargo bench -- secp256k1
-```
-
-## Running Operation-Specific Benchmarks
-
-You can also run benchmarks for specific operations:
-
-### Key Generation Benchmarks
-
-```
+```bash
+cargo bench -- slh_dsa_sha2_128s_bounded
+cargo bench -- secp256k1_schnorr
 cargo bench -- keygen
+cargo bench -- sign
+cargo bench -- verify
 ```
 
-### Signing Benchmarks
+## Notes
 
-```
-cargo bench -- signing
-```
-
-### Verification Benchmarks
-
-```
-cargo bench -- verification
-```
-
-### Size Comparison Benchmarks
-
-```
-cargo bench -- sizes
-```
-
-## Comparing Algorithms
-
-To see how post-quantum algorithms compare to current standards:
-
-```
-# Compare key generation speed
-cargo bench -- keygen
-
-# Compare signing speed
-cargo bench -- signing
-
-# Compare verification speed
-cargo bench -- verification
-
-# Compare key and signature sizes
-cargo bench -- sizes
-```
-
-## Troubleshooting
-
-If you encounter any issues with a specific algorithm, try running only that algorithm's benchmarks:
-
-```
-cargo bench -- ml_dsa_44
-```
-
-This can help identify any issues with the algorithm implementation.
+- qbit integrations should focus on the bounded SLH-DSA-SHA2-128s profile.
+- The benchmark harness asserts bounded SLH sizes (`pk=32`, `sk=64`, `sig=3680`) before running.
+- Latest recorded bounded SLH speeds (Apple M3 Max, 2026-02-14): `sign=148.736574 ms`, `verify=0.614708 ms`; verify-budget estimates: `16.27 TPS` (1-thread), `65.07 TPS` (4-core ideal), `130.14 TPS` (8-core ideal).
+- Attribution toggles are honored only with `--features test-bench-env-knobs`:
+  `SPX_OPT_PROFILE={scalar|optimized}`, `SPX_DISABLE_SHA_ACCEL=1`,
+  `SPX_DISABLE_SIMD=1`, `SPX_FORS_THREADS=<n>`, and
+  `SPX_SHA_BACKEND={auto|scalar|arm|x86|commoncrypto}`.
+- ARM SHA remains experimental and should not be treated as production-supported
+  without separate backend evidence.
+- Filtered runs generate partial artifacts scoped to benchmarks executed in that run.

@@ -1,128 +1,126 @@
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
-#include <stdint.h>
-#include "../../sphincsplus/ref/randombytes.h"
-#include "../../sphincsplus/ref/api.h"
-#include "../../sphincsplus/ref/fors.h"
-#include "../../sphincsplus/ref/hash.h"
-#include "../../sphincsplus/ref/thash.h"
-#include "../../sphincsplus/ref/utils.h"
-#include "../../sphincsplus/ref/address.h"
+
 #include "libbitcoinpqc/slh_dsa.h"
+#include "../secure_zero.h"
 
-/*
- * This file implements utility functions for SLH-DSA-Shake-128s (SPHINCS+)
- * particularly related to random data handling
- */
+#include "../../sphincsplus/ref/api.h"
+#include "../../sphincsplus/ref/randombytes.h"
 
-/* Provide a custom random bytes function that uses user-provided entropy */
-static const uint8_t *g_random_data = NULL;
-static size_t g_random_data_size = 0;
-static size_t g_random_data_offset = 0;
+#define SHA256_BLOCK_BYTES 64
+#define SHA256_INC_STATE_BYTES 40
 
-/* Initialize the random data source */
+#if CRYPTO_SECRETKEYBYTES != SHA256_BLOCK_BYTES
+#error "slh_dsa_derandomize expects the bounded30 secret key to be one SHA-256 block."
+#endif
+
+/* From sphincsplus/ref/sha2.c */
+void sha256_inc_init(uint8_t *state);
+void sha256_inc_blocks(uint8_t *state, const uint8_t *in, size_t inblocks);
+void sha256_inc_finalize(uint8_t *out, uint8_t *state, const uint8_t *in, size_t inlen);
+void sha256(uint8_t *out, const uint8_t *in, size_t inlen);
+
+/* Provide a custom random bytes function that uses user-provided entropy. */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define LIBBITCOINPQC_THREAD_LOCAL _Thread_local
+#elif defined(_MSC_VER)
+#define LIBBITCOINPQC_THREAD_LOCAL __declspec(thread)
+#elif defined(__GNUC__) || defined(__clang__)
+#define LIBBITCOINPQC_THREAD_LOCAL __thread
+#else
+#error "Thread-local storage is required for SLH-DSA random source isolation on this compiler."
+#endif
+
+static LIBBITCOINPQC_THREAD_LOCAL const uint8_t *g_random_data = NULL;
+static LIBBITCOINPQC_THREAD_LOCAL size_t g_random_data_size = 0;
+static LIBBITCOINPQC_THREAD_LOCAL size_t g_random_data_offset = 0;
+static LIBBITCOINPQC_THREAD_LOCAL int g_random_source_failed = 0;
+
+void slh_dsa_random_source_clear_failure(void) {
+    g_random_source_failed = 0;
+}
+
+int slh_dsa_random_source_failed(void) {
+    return g_random_source_failed;
+}
+
+static void mark_random_source_failed(void) {
+    g_random_source_failed = 1;
+}
+
 void slh_dsa_init_random_source(const uint8_t *random_data, size_t random_data_size) {
     g_random_data = random_data;
     g_random_data_size = random_data_size;
-
-    /* Always reset offset to ensure deterministic behavior */
     g_random_data_offset = 0;
-
-    /* Note: For truly deterministic behavior across multiple calls,
-     * we should hash the random data with some constant seed, but
-     * for this implementation we'll just use the raw data.
-     */
+    slh_dsa_random_source_clear_failure();
 }
 
-/* Setup custom random function - this is called before keygen/sign */
-void slh_dsa_setup_custom_random() {
-    /* Nothing to do here, as we can't replace the function */
-}
+/* Hook points retained for interface consistency. */
+void slh_dsa_setup_custom_random(void) {}
 
-/* Restore original random function - this is called after keygen/sign */
-void slh_dsa_restore_original_random() {
-    /* Clear the global state */
+void slh_dsa_restore_original_random(void) {
     g_random_data = NULL;
     g_random_data_size = 0;
     g_random_data_offset = 0;
 }
 
-/* This function is called from our custom randombytes implementation */
 void custom_slh_randombytes_impl(uint8_t *out, size_t outlen) {
-    /* If we don't have custom random data, use system randomness */
-    if (g_random_data == NULL || g_random_data_size == 0) {
-        /* Fall back to system randomness */
-        FILE *f = fopen("/dev/urandom", "r");
-        if (!f) {
-            /* If we can't open /dev/urandom, just fill with zeros */
-            memset(out, 0, outlen);
-            return;
-        }
-
-        if (fread(out, 1, outlen, f) != outlen) {
-            /* If we can't read enough data, fill remaining with zeros */
-            memset(out, 0, outlen);
-        }
-
-        fclose(f);
+    if (outlen == 0) {
         return;
     }
 
-    /* Otherwise use our provided random data */
-    size_t remaining = g_random_data_size - g_random_data_offset;
+    if (!out) {
+        mark_random_source_failed();
+        return;
+    }
 
-    if (outlen > remaining) {
-        /* If we need more random bytes than available, we cycle through the provided data */
-        size_t position = 0;
+    if (g_random_data == NULL || g_random_data_size == 0) {
+        mark_random_source_failed();
+        /* Keep the output initialized; callers must fail closed on the flag. */
+        bitcoin_pqc_secure_zero(out, outlen);
+        return;
+    }
 
-        while (position < outlen) {
-            size_t to_copy = (outlen - position < remaining) ? outlen - position : remaining;
-            memcpy(out + position, g_random_data + g_random_data_offset, to_copy);
-
-            position += to_copy;
-            g_random_data_offset = (g_random_data_offset + to_copy) % g_random_data_size;
-            remaining = g_random_data_size - g_random_data_offset;
+    size_t position = 0;
+    while (position < outlen) {
+        size_t remaining = g_random_data_size - g_random_data_offset;
+        size_t to_copy = outlen - position;
+        if (to_copy > remaining) {
+            to_copy = remaining;
         }
-    } else {
-        /* We have enough random data */
-        memcpy(out, g_random_data + g_random_data_offset, outlen);
-        g_random_data_offset = (g_random_data_offset + outlen) % g_random_data_size;
+
+        memcpy(out + position, g_random_data + g_random_data_offset, to_copy);
+
+        position += to_copy;
+        g_random_data_offset = (g_random_data_offset + to_copy) % g_random_data_size;
     }
 }
 
-/* Simple implementation of deterministic randomness from message and key */
 void slh_dsa_derandomize(uint8_t *seed, const uint8_t *m, size_t mlen, const uint8_t *sk) {
-    /* Create a buffer to hold combined data */
-    size_t combined_len = mlen + CRYPTO_SECRETKEYBYTES;
-    uint8_t *combined = malloc(combined_len);
-
-    if (combined) {
-        /* Combine secret key and message */
-        memcpy(combined, sk, CRYPTO_SECRETKEYBYTES);
-        memcpy(combined + CRYPTO_SECRETKEYBYTES, m, mlen);
-
-        /* Use custom hash function (simple XOR of message with key for each block) */
-        uint8_t buffer[64] = {0};
-        for (size_t i = 0; i < combined_len; i++) {
-            buffer[i % 64] ^= combined[i];
+    if (!seed || (!m && mlen != 0) || !sk) {
+        if (seed) {
+            bitcoin_pqc_secure_zero(seed, 64);
         }
-
-        /* Ensure the randomness looks random enough */
-        for (size_t i = 0; i < 10; i++) {
-            for (size_t j = 0; j < 64; j++) {
-                buffer[j] = buffer[(j + 1) % 64] ^ buffer[(j + 7) % 64] ^ buffer[(j + 13) % 64];
-            }
-        }
-
-        /* Copy the result */
-        memcpy(seed, buffer, 64);
-
-        /* Clean up */
-        memset(combined, 0, combined_len);
-        free(combined);
-    } else {
-        /* Fallback if memory allocation fails */
-        memset(seed, 0, 64);
+        mark_random_source_failed();
+        return;
     }
+
+    uint8_t state[SHA256_INC_STATE_BYTES];
+    uint8_t digest0[32];
+    uint8_t digest1_input[33];
+    const uint8_t empty_message = 0;
+    const uint8_t *message = m ? m : &empty_message;
+
+    sha256_inc_init(state);
+    sha256_inc_blocks(state, sk, CRYPTO_SECRETKEYBYTES / SHA256_BLOCK_BYTES);
+    sha256_inc_finalize(digest0, state, message, mlen);
+    memcpy(seed, digest0, sizeof(digest0));
+
+    memcpy(digest1_input, digest0, sizeof(digest0));
+    digest1_input[32] = 1;
+    sha256(seed + 32, digest1_input, sizeof(digest1_input));
+
+    bitcoin_pqc_secure_zero(state, sizeof(state));
+    bitcoin_pqc_secure_zero(digest0, sizeof(digest0));
+    bitcoin_pqc_secure_zero(digest1_input, sizeof(digest1_input));
 }

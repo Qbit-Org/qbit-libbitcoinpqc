@@ -2,37 +2,48 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    // Build the C library
-    let dst = cmake::build(".");
+    let mut cmake_config = cmake::Config::new(".");
+    if env::var_os("CARGO_FEATURE_TEST_HELPERS").is_some() {
+        cmake_config.define("BITCOINPQC_ENABLE_TEST_HELPERS", "ON");
+    }
+    let forsc_max_grind_attempts =
+        env::var("BITCOINPQC_FORSC_MAX_GRIND_ATTEMPTS").unwrap_or_else(|_| "1835008".to_string());
+    let wotsc_max_counter =
+        env::var("BITCOINPQC_WOTSC_MAX_COUNTER").unwrap_or_else(|_| "65535".to_string());
+    cmake_config.define(
+        "BITCOINPQC_FORSC_MAX_GRIND_ATTEMPTS",
+        forsc_max_grind_attempts,
+    );
+    cmake_config.define("BITCOINPQC_WOTSC_MAX_COUNTER", wotsc_max_counter);
+    if env::var_os("CARGO_FEATURE_TEST_BENCH_ENV_KNOBS").is_some() {
+        cmake_config.define("SPX_ENABLE_TEST_BENCH_ENV_KNOBS", "ON");
+    }
+    let dst = cmake_config.build();
 
-    // Link against the built library
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
     println!("cargo:rustc-link-lib=static=bitcoinpqc");
 
-    // Tell cargo to invalidate the built crate whenever the headers change
+    println!("cargo:rerun-if-changed=CMakeLists.txt");
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=sphincsplus");
     println!("cargo:rerun-if-changed=include/libbitcoinpqc/bitcoinpqc.h");
-    println!("cargo:rerun-if-changed=include/libbitcoinpqc/ml_dsa.h");
     println!("cargo:rerun-if-changed=include/libbitcoinpqc/slh_dsa.h");
+    println!("cargo:rerun-if-changed=include/libbitcoinpqc/sign_stats.h");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_TEST_HELPERS");
+    println!("cargo:rerun-if-env-changed=BITCOINPQC_FORSC_MAX_GRIND_ATTEMPTS");
+    println!("cargo:rerun-if-env-changed=BITCOINPQC_WOTSC_MAX_COUNTER");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_TEST_BENCH_ENV_KNOBS");
 
-    // The bindgen::Builder is the main entry point to bindgen
     let bindings = bindgen::Builder::default()
-        // The input header to generate bindings for
         .header("include/libbitcoinpqc/bitcoinpqc.h")
-        // Tell bindgen to generate constants for enums
-        .bitfield_enum("bitcoin_pqc_algorithm_t")
-        .bitfield_enum("bitcoin_pqc_error_t")
-        // Tell cargo to invalidate the built crate whenever the wrapper changes
+        .clang_arg("-Iinclude")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        // Suppress warnings for unused code in the generated bindings
         .allowlist_function("bitcoin_pqc_.*")
         .allowlist_type("bitcoin_pqc_.*")
         .allowlist_var("BITCOIN_PQC_.*")
-        // Generate bindings
         .generate()
-        // Unwrap the Result and panic on failure
         .expect("Unable to generate bindings");
 
-    // Write the bindings to the $OUT_DIR/bindings.rs file
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     bindings
         .write_to_file(out_path.join("bindings.rs"))

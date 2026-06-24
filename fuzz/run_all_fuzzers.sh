@@ -1,29 +1,35 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Exit immediately if a command exits with a non-zero status.
-set -e
+set -euo pipefail
 
-# Define the fuzz targets to run (names must match Cargo.toml)
-TARGETS="keypair_generation sign_verify cross_algorithm key_parsing signature_parsing"
+# Names must match fuzz/Cargo.toml; fuzz/check_fuzz_inventory.sh enforces this.
+TARGETS=(
+  keypair_generation
+  sign_verify
+  huge_message_api
+  concurrent_sign_verify
+  key_parsing
+  signature_parsing
+  verify_invalid
+  malformed_inputs
+  message_to_indices
+  message_to_indices_direct
+  wotsc_direct
+)
 
-echo "Running all fuzz targets in parallel: $TARGETS"
-
-# Check if GNU Parallel is installed
-if ! command -v parallel &> /dev/null
-then
-    echo "Error: GNU Parallel is not installed. Please install it to run fuzzers in parallel."
-    echo "(e.g., 'sudo apt install parallel' or 'brew install parallel')"
-    exit 1
+if [[ "${1:-}" == "--list" ]]; then
+  printf '%s\n' "${TARGETS[@]}"
+  exit 0
 fi
 
-# Run targets in parallel using GNU Parallel
-# -j 0: Run one job per CPU core. Adjust if needed (e.g., -j 4 for 4 cores).
-# --line-buffer: Buffer output line by line, helps prevent excessively interleaved output.
-# {}: Placeholder for each target name.
+FUZZ_ARGS=("$@")
+if [ ${#FUZZ_ARGS[@]} -eq 0 ]; then
+  FUZZ_ARGS=(-runs=10000)
+fi
 
-printf "%s\n" $TARGETS | parallel -j 0 --line-buffer \
-  'echo "--- Starting fuzzer: {} ---"; cargo fuzz run "{}"; echo "--- Finished fuzzer: {} ---"'
-
-
-echo "-------------------------------------"
-echo "All parallel fuzz jobs launched (may still be running)."
+echo "Running all fuzz targets with args: ${FUZZ_ARGS[*]}"
+for target in "${TARGETS[@]}"; do
+  echo "--- Starting fuzzer: ${target} ---"
+  cargo +nightly fuzz run "${target}" -- "${FUZZ_ARGS[@]}"
+  echo "--- Finished fuzzer: ${target} ---"
+done
