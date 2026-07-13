@@ -131,7 +131,7 @@ jobs:
           cargo test --verbose --test sha2_backend_tests --test bounded_mode_correctness_tests
           cargo test --verbose --test bounded_mode_correctness_tests bounded_mode_soak_pr_smoke_100_roundtrips -- --ignored --nocapture
 
-      - name: Run backend differential tests under UBSan (test/bench env knobs)
+      - name: Run backend differential tests under UBSan (requested/effective backends)
         if: matrix.platform == 'linux'
         timeout-minutes: 15
         env:
@@ -147,15 +147,17 @@ jobs:
             exit 1
           fi
           RUSTFLAGS="-C linker=clang -C link-arg=$UBSAN_RT -C link-arg=-lpthread -C link-arg=-ldl -C link-arg=-lrt -C link-arg=-lm -C link-arg=-lc" \
-            cargo test --verbose --features test-bench-env-knobs --test backend_differential_tests
+            cargo test --verbose --features test-bench-env-knobs,test-helpers --test backend_differential_tests -- --nocapture
 
-      - name: Run backend differential tests (Linux x86/scalar/auto)
+      - name: Run backend differential tests (Linux requested/effective capability report)
         if: matrix.platform == 'linux'
-        run: cargo test --verbose --features test-bench-env-knobs --test backend_differential_tests
+        run: cargo test --verbose --features test-bench-env-knobs,test-helpers --test backend_differential_tests -- --nocapture
 
-      - name: Run backend differential tests (macOS CommonCrypto)
+      - name: Run backend differential tests (macOS required CommonCrypto)
         if: matrix.platform == 'macos'
-        run: cargo test --verbose --features test-bench-env-knobs --test backend_differential_tests
+        env:
+          BACKEND_DIFFERENTIAL_REQUIRE: commoncrypto
+        run: cargo test --verbose --features test-bench-env-knobs,test-helpers --test backend_differential_tests -- --nocapture
 
       - name: Run production env knob policy test (test-helpers feature)
         if: matrix.platform == 'linux'
@@ -234,9 +236,9 @@ jobs:
         shell: pwsh
         run: cargo test --verbose
 
-      - name: Run backend differential tests (test/bench env knobs)
+      - name: Run backend differential tests (scalar/auto with x86 capability report)
         shell: pwsh
-        run: cargo test --verbose --features test-bench-env-knobs --test backend_differential_tests
+        run: cargo test --verbose --features test-bench-env-knobs,test-helpers --test backend_differential_tests -- --nocapture
 
   param-benchmark:
     name: Param Benchmark (${{ matrix.platform }})
