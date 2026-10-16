@@ -59,7 +59,7 @@ static int stack_contains(const uint8_t *needle, size_t needle_len) {
  * BURN_CHECK_SKIP_BYTES allows for the entry-point wrapper frames above the
  * burn and for the probe frame's own layout at the bottom.
  */
-#define BURN_CHECK_SKIP_BYTES (4u * 1024u)
+#define BURN_CHECK_SKIP_BYTES (2u * 1024u)
 #define BURN_CHECK_BYTES (BITCOIN_PQC_BURN_STACK_BYTES - 2u * BURN_CHECK_SKIP_BYTES)
 
 #if BITCOIN_PQC_BURN_STACK_BYTES <= 2u * BURN_CHECK_SKIP_BYTES || \
