@@ -35,7 +35,7 @@ int slh_dsa_sign(
     return slh_dsa_sign_with_stats(sig, siglen, m, mlen, sk, NULL);
 }
 
-int slh_dsa_sign_with_stats(
+static int slh_dsa_sign_with_stats_impl(
     uint8_t *sig,
     size_t *siglen,
     const uint8_t *m,
@@ -95,5 +95,21 @@ int slh_dsa_sign_with_stats(
         *siglen = 0;
     }
 
+    return result;
+}
+
+/* Wraps the implementation so the stack it released is burned on every
+   return path; see bitcoin_pqc_burn_stack(). */
+int slh_dsa_sign_with_stats(
+    uint8_t *sig,
+    size_t *siglen,
+    const uint8_t *m,
+    size_t mlen,
+    const uint8_t *sk,
+    bitcoin_pqc_sign_stats_t *stats
+) {
+    int result = slh_dsa_sign_with_stats_impl(sig, siglen, m, mlen, sk, stats);
+
+    bitcoin_pqc_burn_stack();
     return result;
 }

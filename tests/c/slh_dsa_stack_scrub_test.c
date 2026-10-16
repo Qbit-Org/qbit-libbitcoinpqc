@@ -50,6 +50,48 @@ static int stack_contains(const uint8_t *needle, size_t needle_len) {
     return 0;
 }
 
+/*
+ * The library burns BITCOIN_PQC_BURN_STACK_BYTES (64 KiB natively) of released
+ * stack when a secret-key entry point returns. Paint the region first so a
+ * missing burn leaves the call's own residue rather than fresh zero pages,
+ * then require the burned window below the entry point's frames to be zero.
+ * BURN_CHECK_SKIP_BYTES allows for the entry-point wrapper frames above it.
+ */
+#define BURN_CHECK_SKIP_BYTES (4u * 1024u)
+#define BURN_CHECK_BYTES (48u * 1024u)
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#elif defined(_MSC_VER)
+__declspec(noinline)
+#endif
+static void stack_paint(void) {
+    volatile uint8_t probe[PROBE_STACK_BYTES];
+    size_t i;
+
+    for (i = 0; i < sizeof(probe); i++) {
+        probe[i] = 0xa5u;
+    }
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#elif defined(_MSC_VER)
+__declspec(noinline)
+#endif
+static int stack_burned(void) {
+    volatile uint8_t probe[PROBE_STACK_BYTES];
+    size_t end = sizeof(probe) - BURN_CHECK_SKIP_BYTES;
+    size_t i;
+
+    for (i = end - BURN_CHECK_BYTES; i < end; i++) {
+        if (probe[i] != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 int main(void) {
     uint8_t *entropy = malloc(MIN_ENTROPY_SIZE);
     uint8_t *pk = malloc(SLH_DSA_PUBLIC_KEY_SIZE);
@@ -67,8 +109,12 @@ int main(void) {
     }
 
     fill_entropy(entropy, MIN_ENTROPY_SIZE);
+    stack_paint();
     if (slh_dsa_keygen(pk, sk, entropy, MIN_ENTROPY_SIZE) != 0) {
         return fail("slh_dsa_keygen should succeed");
+    }
+    if (!stack_burned()) {
+        rc |= fail("released stack not burned after slh_dsa_keygen");
     }
     memcpy(sk_seed, sk, SPX_N_BYTES);
     memcpy(sk_prf, sk + SPX_N_BYTES, SPX_N_BYTES);
@@ -79,8 +125,20 @@ int main(void) {
         rc |= fail("SK_PRF copy left on the stack after slh_dsa_keygen");
     }
 
+    stack_paint();
+    if (slh_dsa_secret_key_validate(sk, SLH_DSA_SECRET_KEY_SIZE) != 0) {
+        return fail("slh_dsa_secret_key_validate should succeed");
+    }
+    if (!stack_burned()) {
+        rc |= fail("released stack not burned after slh_dsa_secret_key_validate");
+    }
+
+    stack_paint();
     if (slh_dsa_sign(sig, &siglen, message, sizeof(message), sk) != 0) {
         return fail("slh_dsa_sign should succeed");
+    }
+    if (!stack_burned()) {
+        rc |= fail("released stack not burned after slh_dsa_sign");
     }
     if (stack_contains(sk_seed, SPX_N_BYTES)) {
         rc |= fail("SK_SEED copy left on the stack after slh_dsa_sign");
