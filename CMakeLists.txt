@@ -137,6 +137,15 @@ if(BUILD_TESTING)
         NAME slh_dsa_sign_failure_cleanup_test
         COMMAND slh_dsa_sign_failure_cleanup_test
     )
+
+    add_executable(slh_dsa_stack_scrub_test
+        tests/c/slh_dsa_stack_scrub_test.c
+    )
+    target_link_libraries(slh_dsa_stack_scrub_test PRIVATE bitcoinpqc)
+    add_test(
+        NAME slh_dsa_stack_scrub_test
+        COMMAND slh_dsa_stack_scrub_test
+    )
 endif()
 
 # Set include directories for the library

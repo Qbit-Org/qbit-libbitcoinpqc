@@ -27,6 +27,35 @@
 #define SPX_SHA_ATOMIC_STORE_PTR(ptr, value) (*(ptr) = (value))
 #endif
 
+/* Zero scratch through a volatile function pointer so the stores are not
+   removed as dead; padding and short-message state hold input bytes, which
+   may be secret (SK_SEED, SK_PRF, derived seeds). */
+static void *(*const volatile spx_sha2_memset)(void *, int, size_t) = memset;
+
+static void spx_sha2_wipe(void *ptr, size_t len)
+{
+    spx_sha2_memset(ptr, 0, len);
+}
+
+/* The compression functions keep the message schedule and working variables
+   in locals that may spill to the stack, and that schedule is reversible to
+   the input block. Overwrite the region the compression frame just released.
+   SPX_SHA2_BURN_STACK_BYTES covers the largest compression frame (checked
+   with -fstack-usage). */
+#define SPX_SHA2_BURN_STACK_BYTES 512
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#elif defined(_MSC_VER)
+__declspec(noinline)
+#endif
+static void spx_sha2_burn_stack(void)
+{
+    unsigned char scratch[SPX_SHA2_BURN_STACK_BYTES];
+
+    spx_sha2_wipe(scratch, sizeof(scratch));
+}
+
 static uint32_t load_bigendian_32(const uint8_t *x) {
     return (uint32_t)(x[3]) | (((uint32_t)(x[2])) << 8) |
            (((uint32_t)(x[1])) << 16) | (((uint32_t)(x[0])) << 24);
@@ -711,14 +740,20 @@ static spx_sha512_hashblocks_impl_fn spx_sha512_get_hashblocks_impl(void)
 static size_t crypto_hashblocks_sha256(uint8_t *statebytes,
                                        const uint8_t *in, size_t inlen)
 {
-    return spx_sha256_get_hashblocks_impl()(statebytes, in, inlen);
+    size_t result = spx_sha256_get_hashblocks_impl()(statebytes, in, inlen);
+
+    spx_sha2_burn_stack();
+    return result;
 }
 
 static int crypto_hashblocks_sha512(unsigned char *statebytes,
                                     const unsigned char *in,
                                     unsigned long long inlen)
 {
-    return spx_sha512_get_hashblocks_impl()(statebytes, in, inlen);
+    int result = spx_sha512_get_hashblocks_impl()(statebytes, in, inlen);
+
+    spx_sha2_burn_stack();
+    return result;
 }
 
 
@@ -820,6 +855,7 @@ void sha256_inc_finalize(uint8_t *out, uint8_t *state, const uint8_t *in, size_t
         out[i] = state[i];
     }
 
+    spx_sha2_wipe(padded, sizeof(padded));
 }
 
 void sha512_inc_finalize(uint8_t *out, uint8_t *state, const uint8_t *in, size_t inlen) {
@@ -869,6 +905,8 @@ void sha512_inc_finalize(uint8_t *out, uint8_t *state, const uint8_t *in, size_t
     for (size_t i = 0; i < 64; ++i) {
         out[i] = state[i];
     }
+
+    spx_sha2_wipe(padded, sizeof(padded));
 }
 
 void sha256(uint8_t *out, const uint8_t *in, size_t inlen) {
@@ -876,6 +914,7 @@ void sha256(uint8_t *out, const uint8_t *in, size_t inlen) {
 
     sha256_inc_init(state);
     sha256_inc_finalize(out, state, in, inlen);
+    spx_sha2_wipe(state, sizeof(state));
 }
 
 void sha512(uint8_t *out, const uint8_t *in, size_t inlen) {
@@ -883,6 +922,7 @@ void sha512(uint8_t *out, const uint8_t *in, size_t inlen) {
 
     sha512_inc_init(state);
     sha512_inc_finalize(out, state, in, inlen);
+    spx_sha2_wipe(state, sizeof(state));
 }
 
 /**
