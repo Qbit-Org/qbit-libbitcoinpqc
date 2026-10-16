@@ -2,7 +2,6 @@
 #define LIBBITCOINPQC_SECURE_ZERO_H
 
 #include <stddef.h>
-#include <string.h>
 
 static inline void bitcoin_pqc_secure_zero(void *ptr, size_t len) {
     if (!ptr || len == 0) {
@@ -24,23 +23,25 @@ static inline void bitcoin_pqc_secure_zero(void *ptr, size_t len) {
  * secret-key entry point returns covers every frame the call released, at the
  * cost of one wipe per call rather than one per compression.
  *
- * Optimized native keygen/sign use about 13 KiB below the entry point (GCC -O2,
- * x86-64, AVX2 path; measured by painting the stack). Unoptimized builds can
- * use far more (the AVX2 8-way transform alone takes ~190 KiB at -O0) and are
- * not covered. Emscripten's default 64 KiB stack needs a smaller burn; its
- * reference SHA-2 keeps the schedule in WASM locals rather than linear memory.
+ * Measured by painting the stack (x86-64 GCC, AVX2 path): optimized native
+ * keygen/sign use about 13 KiB below the entry point, unoptimized builds about
+ * 200 KiB (the -O0 AVX2 8-way transform frame alone is ~190 KiB). Emscripten
+ * -O3 keygen/sign use about 1.6 KiB of the linear-memory stack (default size
+ * 64 KiB); its reference SHA-2 keeps the schedule in WASM locals.
  */
 #ifndef BITCOIN_PQC_BURN_STACK_BYTES
 #if defined(__EMSCRIPTEN__)
 #define BITCOIN_PQC_BURN_STACK_BYTES (16u * 1024u)
+#elif (defined(__GNUC__) || defined(__clang__)) && !defined(__OPTIMIZE__)
+#define BITCOIN_PQC_BURN_STACK_BYTES (256u * 1024u)
 #else
 #define BITCOIN_PQC_BURN_STACK_BYTES (64u * 1024u)
 #endif
 #endif
 
-/* memset through a volatile function pointer so the wipe is not removed as a
-   dead store to a dying array. */
-static void *(*const volatile bitcoin_pqc_burn_memset)(void *, int, size_t) = memset;
+#if BITCOIN_PQC_BURN_STACK_BYTES < 1
+#error "BITCOIN_PQC_BURN_STACK_BYTES must be positive"
+#endif
 
 /* Must not be inlined: the scratch array has to occupy the frames the
    just-returned call released, below the caller's frame. "unused" keeps
@@ -48,7 +49,7 @@ static void *(*const volatile bitcoin_pqc_burn_memset)(void *, int, size_t) = me
 #if defined(__GNUC__) || defined(__clang__)
 #define BITCOIN_PQC_BURN_STACK_ATTRS __attribute__((noinline, unused))
 #elif defined(_MSC_VER)
-#define BITCOIN_PQC_BURN_STACK_ATTRS __declspec(noinline)
+#define BITCOIN_PQC_BURN_STACK_ATTRS __inline __declspec(noinline)
 #else
 #define BITCOIN_PQC_BURN_STACK_ATTRS
 #endif
@@ -56,7 +57,7 @@ static void *(*const volatile bitcoin_pqc_burn_memset)(void *, int, size_t) = me
 static BITCOIN_PQC_BURN_STACK_ATTRS void bitcoin_pqc_burn_stack(void) {
     unsigned char scratch[BITCOIN_PQC_BURN_STACK_BYTES];
 
-    bitcoin_pqc_burn_memset(scratch, 0, sizeof(scratch));
+    bitcoin_pqc_secure_zero(scratch, sizeof(scratch));
 }
 
 #endif /* LIBBITCOINPQC_SECURE_ZERO_H */

@@ -4,10 +4,11 @@
 #include <string.h>
 
 #include "libbitcoinpqc/slh_dsa.h"
+#include "../../src/secure_zero.h"
 
 #define MIN_ENTROPY_SIZE 128u
 #define SPX_N_BYTES 16u
-#define PROBE_STACK_BYTES (256u * 1024u)
+#define PROBE_STACK_BYTES (320u * 1024u)
 
 static void fill_entropy(uint8_t *out, size_t len) {
     size_t i;
@@ -51,14 +52,20 @@ static int stack_contains(const uint8_t *needle, size_t needle_len) {
 }
 
 /*
- * The library burns BITCOIN_PQC_BURN_STACK_BYTES (64 KiB natively) of released
- * stack when a secret-key entry point returns. Paint the region first so a
- * missing burn leaves the call's own residue rather than fresh zero pages,
- * then require the burned window below the entry point's frames to be zero.
- * BURN_CHECK_SKIP_BYTES allows for the entry-point wrapper frames above it.
+ * The library burns BITCOIN_PQC_BURN_STACK_BYTES of released stack when a
+ * secret-key entry point returns. Paint the region first so a missing burn
+ * leaves the call's own residue rather than fresh zero pages, then require
+ * the burned window below the entry point's frames to be zero.
+ * BURN_CHECK_SKIP_BYTES allows for the entry-point wrapper frames above the
+ * burn and for the probe frame's own layout at the bottom.
  */
 #define BURN_CHECK_SKIP_BYTES (4u * 1024u)
-#define BURN_CHECK_BYTES (48u * 1024u)
+#define BURN_CHECK_BYTES (BITCOIN_PQC_BURN_STACK_BYTES - 2u * BURN_CHECK_SKIP_BYTES)
+
+#if BITCOIN_PQC_BURN_STACK_BYTES <= 2u * BURN_CHECK_SKIP_BYTES || \
+    BITCOIN_PQC_BURN_STACK_BYTES > PROBE_STACK_BYTES - BURN_CHECK_SKIP_BYTES
+#error "stack scrub test window does not fit BITCOIN_PQC_BURN_STACK_BYTES"
+#endif
 
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((noinline))
@@ -100,6 +107,7 @@ int main(void) {
     uint8_t *sk_seed = malloc(SPX_N_BYTES);
     uint8_t *sk_prf = malloc(SPX_N_BYTES);
     static const uint8_t message[32] = {0x01};
+    uint8_t derandomized[64];
     size_t siglen = SLH_DSA_SIGNATURE_SIZE;
     int rc = 0;
 
@@ -131,6 +139,12 @@ int main(void) {
     }
     if (!stack_burned()) {
         rc |= fail("released stack not burned after slh_dsa_secret_key_validate");
+    }
+
+    stack_paint();
+    slh_dsa_derandomize(derandomized, message, sizeof(message), sk);
+    if (!stack_burned()) {
+        rc |= fail("released stack not burned after slh_dsa_derandomize");
     }
 
     stack_paint();
