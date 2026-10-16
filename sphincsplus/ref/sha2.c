@@ -46,6 +46,8 @@ static void spx_sha2_wipe(void *ptr, size_t len)
 
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((noinline))
+#elif defined(_MSC_VER)
+__declspec(noinline)
 #endif
 static void spx_sha2_burn_stack(void)
 {

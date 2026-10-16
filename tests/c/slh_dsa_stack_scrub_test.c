@@ -29,6 +29,8 @@ static int fail(const char *message) {
  */
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((noinline))
+#elif defined(_MSC_VER)
+__declspec(noinline)
 #endif
 static int stack_contains(const uint8_t *needle, size_t needle_len) {
     volatile uint8_t probe[PROBE_STACK_BYTES];
