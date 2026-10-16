@@ -6,7 +6,7 @@
 #include "libbitcoinpqc/slh_dsa.h"
 
 #define MIN_ENTROPY_SIZE 128u
-#define SK_SEED_SIZE 16u
+#define SPX_N_BYTES 16u
 #define PROBE_STACK_BYTES (256u * 1024u)
 
 static void fill_entropy(uint8_t *out, size_t len) {
@@ -24,7 +24,7 @@ static int fail(const char *message) {
 
 /*
  * Scan the stack region just released by the library call for an exact copy
- * of SK_SEED. The probe frame overlaps the frames the call used, so a scratch
+ * of a secret-key component. The probe frame overlaps the frames the call used, so a scratch
  * copy that was not wiped before return is still visible here.
  */
 #if defined(__GNUC__) || defined(__clang__)
@@ -53,13 +53,14 @@ int main(void) {
     uint8_t *pk = malloc(SLH_DSA_PUBLIC_KEY_SIZE);
     uint8_t *sk = malloc(SLH_DSA_SECRET_KEY_SIZE);
     uint8_t *sig = malloc(SLH_DSA_SIGNATURE_SIZE);
-    uint8_t *sk_seed = malloc(SK_SEED_SIZE);
+    uint8_t *sk_seed = malloc(SPX_N_BYTES);
+    uint8_t *sk_prf = malloc(SPX_N_BYTES);
     static const uint8_t message[32] = {0x01};
     size_t siglen = SLH_DSA_SIGNATURE_SIZE;
     int rc = 0;
 
     if (entropy == NULL || pk == NULL || sk == NULL || sig == NULL ||
-        sk_seed == NULL) {
+        sk_seed == NULL || sk_prf == NULL) {
         return fail("allocation failed");
     }
 
@@ -67,16 +68,23 @@ int main(void) {
     if (slh_dsa_keygen(pk, sk, entropy, MIN_ENTROPY_SIZE) != 0) {
         return fail("slh_dsa_keygen should succeed");
     }
-    memcpy(sk_seed, sk, SK_SEED_SIZE);
-    if (stack_contains(sk_seed, SK_SEED_SIZE)) {
+    memcpy(sk_seed, sk, SPX_N_BYTES);
+    memcpy(sk_prf, sk + SPX_N_BYTES, SPX_N_BYTES);
+    if (stack_contains(sk_seed, SPX_N_BYTES)) {
         rc |= fail("SK_SEED copy left on the stack after slh_dsa_keygen");
+    }
+    if (stack_contains(sk_prf, SPX_N_BYTES)) {
+        rc |= fail("SK_PRF copy left on the stack after slh_dsa_keygen");
     }
 
     if (slh_dsa_sign(sig, &siglen, message, sizeof(message), sk) != 0) {
         return fail("slh_dsa_sign should succeed");
     }
-    if (stack_contains(sk_seed, SK_SEED_SIZE)) {
+    if (stack_contains(sk_seed, SPX_N_BYTES)) {
         rc |= fail("SK_SEED copy left on the stack after slh_dsa_sign");
+    }
+    if (stack_contains(sk_prf, SPX_N_BYTES)) {
+        rc |= fail("SK_PRF copy left on the stack after slh_dsa_sign");
     }
 
     if (rc == 0) {
@@ -87,5 +95,6 @@ int main(void) {
     free(sk);
     free(sig);
     free(sk_seed);
+    free(sk_prf);
     return rc;
 }

@@ -218,6 +218,7 @@ int crypto_sign_signature(uint8_t *sig, size_t *siglen,
             ctr++;
             /* Exhausted all 2^32 tweaks of sig[0..3] without a hit. */
             if (ctr == 0) {
+                *siglen = 0;
                 goto cleanup;
             }
             memcpy(sig, r_base, SPX_N);
