@@ -21,8 +21,8 @@ extern "C" {
 /*
  * Common error codes. The enum is append-only: existing values never change.
  *
- * - BAD_ARG: a NULL pointer, a NULL message with a nonzero size, or a
- *   non-empty output struct.
+ * - BAD_ARG: a NULL pointer, a NULL message with a nonzero size, too little
+ *   keygen random data, or a non-empty output struct.
  * - BAD_KEY: key material of the wrong size, or a secret key whose stored
  *   root does not match the root derived from its seeds (the check
  *   bitcoin_pqc_secret_key_validate performs).
@@ -107,8 +107,10 @@ size_t bitcoin_pqc_signature_size(void);
  * @param random_data_size Size of random data, must be >= 128 bytes.
  * @return BITCOIN_PQC_OK on success, BITCOIN_PQC_ERROR_BAD_ARG for NULL
  *         pointers, too little random data, or a non-empty output struct,
- *         BITCOIN_PQC_ERROR_OUT_OF_MEMORY if the key buffers cannot be
- *         allocated, or BITCOIN_PQC_ERROR_BAD_KEY if key generation fails.
+ *         BITCOIN_PQC_ERROR_OUT_OF_MEMORY if the key buffers or the internal
+ *         seed-derivation buffer cannot be allocated, or
+ *         BITCOIN_PQC_ERROR_BAD_KEY if key generation fails for any other
+ *         reason.
  *
  * On success, public_key and secret_key are a self-consistent generated pair.
  * The generated secret key already contains the root computed during keygen, so

@@ -19,6 +19,16 @@ const OK: i32 = 0;
 const BAD_ARG: i32 = -1;
 const BAD_KEY: i32 = -2;
 const BAD_SIGNATURE: i32 = -3;
+const OUT_OF_MEMORY: i32 = -6;
+
+/// Keygen hashes the entropy through a heap buffer that grows with the entropy
+/// size. A length this close to `usize::MAX` passes the overflow check but
+/// asks `malloc` for more than `PTRDIFF_MAX` bytes, which every supported
+/// allocator refuses before the entropy is read, so no out-of-bounds access
+/// can occur. A C library instrumented with AddressSanitizer aborts on such a
+/// request unless `ASAN_OPTIONS=allocator_may_return_null=1` is set; CI does
+/// not run `cargo test` under ASan.
+const UNSATISFIABLE_ENTROPY_SIZE: usize = usize::MAX - 1024;
 
 #[link(name = "bitcoinpqc", kind = "static")]
 unsafe extern "C" {
@@ -479,5 +489,22 @@ fn c_api_rejects_reused_or_nonzero_output_structs() {
 
         bitcoin_pqc_signature_free(&mut signature);
         bitcoin_pqc_keypair_free(&mut keypair);
+    }
+}
+
+#[test]
+fn c_api_keygen_reports_failed_allocation_as_out_of_memory() {
+    unsafe {
+        let entropy = fixed_entropy();
+        let mut keypair = empty_keypair();
+
+        assert_eq!(
+            bitcoin_pqc_keygen(&mut keypair, entropy.as_ptr(), UNSATISFIABLE_ENTROPY_SIZE),
+            OUT_OF_MEMORY
+        );
+        assert!(keypair.public_key.is_null());
+        assert!(keypair.secret_key.is_null());
+        assert_eq!(keypair.public_key_size, 0);
+        assert_eq!(keypair.secret_key_size, 0);
     }
 }

@@ -59,6 +59,14 @@ static int slh_dsa_sign_with_stats_impl(
     bitcoin_pqc_sign_stats_t *stats
 ) {
     if (!sig || !siglen || (!m && mlen != 0) || !sk) {
+        /* Keep the documented failure cleanup even for rejected arguments so a
+           caller never reads stale bytes out of sig. */
+        if (sig) {
+            bitcoin_pqc_secure_zero(sig, CRYPTO_BYTES);
+        }
+        if (siglen) {
+            *siglen = 0;
+        }
         return -1;
     }
 

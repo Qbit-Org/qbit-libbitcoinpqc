@@ -63,11 +63,15 @@ bitcoin_pqc_error_t bitcoin_pqc_keygen(
         return BITCOIN_PQC_ERROR_OUT_OF_MEMORY;
     }
 
-    if (slh_dsa_keygen(pk, sk, random_data, random_data_size) != 0) {
+    int keygen_result = slh_dsa_keygen(pk, sk, random_data, random_data_size);
+    if (keygen_result != 0) {
         bitcoin_pqc_secure_zero(pk, pk_size);
         bitcoin_pqc_secure_zero(sk, sk_size);
         free(pk);
         free(sk);
+        if (keygen_result == SLH_DSA_KEYGEN_ERROR_OUT_OF_MEMORY) {
+            return BITCOIN_PQC_ERROR_OUT_OF_MEMORY;
+        }
         return BITCOIN_PQC_ERROR_BAD_KEY;
     }
 

@@ -80,6 +80,7 @@ Capture these artifacts for each release candidate:
 - Confirm keypair and signature output structs are zero-initialized before use.
 - Confirm reused output structs fail with `BITCOIN_PQC_ERROR_BAD_ARG` unless freed first.
 - Confirm signing with an inconsistent secret key fails with `BITCOIN_PQC_ERROR_BAD_KEY`, matching `bitcoin_pqc_secret_key_validate`, and leaves the signature struct empty.
+- Confirm a failed internal allocation in `bitcoin_pqc_keygen` or `bitcoin_pqc_sign` reports `BITCOIN_PQC_ERROR_OUT_OF_MEMORY` and leaves the output struct empty. `bitcoinpqc_c_api_contract_test` (ctest) and `c_api_edge_cases` (`cargo test`) drive the keygen seed-derivation allocation with an unsatisfiable entropy size.
 - Confirm `bitcoin_pqc_keypair_free` and `bitcoin_pqc_signature_free` are idempotent.
 - Confirm zero-length message sign/verify works through Rust and the C ABI.
 

@@ -8,6 +8,17 @@
 
 #define SHA512_OUTPUT_BYTES 64
 
+/* An undefined macro reads as 0 in #if, so require the code explicitly
+   before checking it. */
+#ifndef SLH_DSA_KEYGEN_ERROR_OUT_OF_MEMORY
+#error "SLH_DSA_KEYGEN_ERROR_OUT_OF_MEMORY must be defined by libbitcoinpqc/slh_dsa.h"
+#endif
+#if SLH_DSA_KEYGEN_ERROR_OUT_OF_MEMORY >= 0 || \
+    SLH_DSA_KEYGEN_ERROR_OUT_OF_MEMORY == -1 || \
+    SLH_DSA_KEYGEN_ERROR_OUT_OF_MEMORY == SLH_DSA_SIGN_ERROR_BAD_KEY
+#error "SLH_DSA_KEYGEN_ERROR_OUT_OF_MEMORY must be a distinct negative failure code"
+#endif
+
 #if CRYPTO_SEEDBYTES > SHA512_OUTPUT_BYTES
 #error "SLH-DSA keygen seed derivation requires SHA-512 output to cover CRYPTO_SEEDBYTES"
 #endif
@@ -38,7 +49,7 @@ static int derive_keygen_seed_v1(
     const size_t input_size = metadata_size + random_data_size;
     uint8_t *input = malloc(input_size);
     if (!input) {
-        return -1;
+        return SLH_DSA_KEYGEN_ERROR_OUT_OF_MEMORY;
     }
 
     memcpy(input, KEYGEN_DERIVE_DOMAIN, domain_size);
@@ -68,8 +79,9 @@ static int slh_dsa_keygen_impl(
     }
 
     uint8_t seed[CRYPTO_SEEDBYTES];
-    if (derive_keygen_seed_v1(seed, random_data, random_data_size) != 0) {
-        return -1;
+    int derived = derive_keygen_seed_v1(seed, random_data, random_data_size);
+    if (derived != 0) {
+        return derived;
     }
 
     int result = crypto_sign_seed_keypair(pk, sk, seed);
