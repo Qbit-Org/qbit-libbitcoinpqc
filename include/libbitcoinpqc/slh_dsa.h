@@ -27,6 +27,17 @@ extern "C" {
 #define SLH_DSA_SHA2_128S_BOUNDED30_SIGNATURE_SIZE SLH_DSA_SIGNATURE_SIZE
 
 /*
+ * slh_dsa_sign() and slh_dsa_sign_with_stats() return 0 on success and a
+ * negative value on failure. SLH_DSA_SIGN_ERROR_BAD_KEY identifies a secret
+ * key that fails slh_dsa_secret_key_validate(); it is distinct from the
+ * generic -1 and from the internal bounded30 signing-limit sentinel, so a
+ * caller can tell a rejected key from a failed signing operation without a
+ * second validation pass. bitcoin_pqc_sign() maps it to
+ * BITCOIN_PQC_ERROR_BAD_KEY.
+ */
+#define SLH_DSA_SIGN_ERROR_BAD_KEY (-101)
+
+/*
  * Stack requirement: slh_dsa_keygen(), slh_dsa_secret_key_validate(),
  * slh_dsa_sign(), slh_dsa_sign_with_stats() and slh_dsa_derandomize()
  * overwrite the stack they released before returning, so callers need about
@@ -71,6 +82,9 @@ int slh_dsa_secret_key_validate(const uint8_t *sk, size_t sk_size);
  * Signing derives the SPHINCS+ optrand input from the secret key and message;
  * it does not fall back to process-global OS entropy.
  * @param m Message bytes. May be NULL only when mlen is zero.
+ * @return 0 on success, SLH_DSA_SIGN_ERROR_BAD_KEY if sk fails
+ *         slh_dsa_secret_key_validate(), or another negative value on any
+ *         other failure. On failure sig is zeroed and *siglen is 0.
  */
 int slh_dsa_sign(
     uint8_t *sig,

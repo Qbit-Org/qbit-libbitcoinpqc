@@ -7,6 +7,20 @@
 #include "../../sphincsplus/ref/api.h"
 #include "../../sphincsplus/ref/sign_stats.h"
 
+/* An undefined macro reads as 0 in #if, so require both codes explicitly
+   before comparing them. */
+#ifndef SLH_DSA_SIGN_ERROR_BAD_KEY
+#error "SLH_DSA_SIGN_ERROR_BAD_KEY must be defined by libbitcoinpqc/slh_dsa.h"
+#endif
+#ifndef BITCOINPQC_SIGN_LIMIT_EXCEEDED
+#error "BITCOINPQC_SIGN_LIMIT_EXCEEDED must be defined by sphincsplus/ref/sign_stats.h"
+#endif
+#if SLH_DSA_SIGN_ERROR_BAD_KEY >= 0 || \
+    SLH_DSA_SIGN_ERROR_BAD_KEY == -1 || \
+    SLH_DSA_SIGN_ERROR_BAD_KEY == BITCOINPQC_SIGN_LIMIT_EXCEEDED
+#error "SLH_DSA_SIGN_ERROR_BAD_KEY must be a distinct negative failure code"
+#endif
+
 /* Debug mode flag - set to 0 to disable debug output */
 #define SLH_DSA_DEBUG 0
 
@@ -51,7 +65,7 @@ static int slh_dsa_sign_with_stats_impl(
     if (slh_dsa_secret_key_validate_unburned(sk, SLH_DSA_SECRET_KEY_SIZE) != 0) {
         bitcoin_pqc_secure_zero(sig, CRYPTO_BYTES);
         *siglen = 0;
-        return -1;
+        return SLH_DSA_SIGN_ERROR_BAD_KEY;
     }
 
     DEBUG_PRINT("SLH-DSA sign: Starting to sign message of length %zu\n", mlen);

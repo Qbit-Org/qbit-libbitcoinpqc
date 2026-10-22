@@ -194,6 +194,42 @@ fn c_api_rejects_invalid_key_and_signature_sizes() {
 }
 
 #[test]
+fn c_api_sign_reports_inconsistent_secret_key_as_bad_key() {
+    unsafe {
+        let mut keypair = generate_test_keypair();
+        let message = b"c api inconsistent secret key";
+        let secret_key =
+            std::slice::from_raw_parts(keypair.secret_key as *const u8, keypair.secret_key_size)
+                .to_vec();
+        let n = keypair.secret_key_size / 4;
+
+        // Layout: [SK_SEED || SK_PRF || PUB_SEED || root]. Every part the
+        // stored root depends on must be reported as a rejected key, not as a
+        // failed signing operation, and the output struct must stay empty.
+        for offset in [0, 2 * n, 3 * n] {
+            let mut corrupted = secret_key.clone();
+            corrupted[offset] ^= 0x80;
+            let mut rejected_signature = empty_signature();
+            assert_eq!(
+                bitcoin_pqc_sign(
+                    corrupted.as_ptr(),
+                    corrupted.len(),
+                    message.as_ptr(),
+                    message.len(),
+                    &mut rejected_signature,
+                ),
+                BAD_KEY,
+                "mutation at byte {offset} should be reported as BAD_KEY"
+            );
+            assert!(rejected_signature.signature.is_null());
+            assert_eq!(rejected_signature.signature_size, 0);
+        }
+
+        bitcoin_pqc_keypair_free(&mut keypair);
+    }
+}
+
+#[test]
 fn c_api_verify_fails_closed_for_malformed_inputs() {
     unsafe {
         let mut keypair = generate_test_keypair();

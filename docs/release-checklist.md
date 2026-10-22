@@ -79,6 +79,7 @@ Capture these artifacts for each release candidate:
 
 - Confirm keypair and signature output structs are zero-initialized before use.
 - Confirm reused output structs fail with `BITCOIN_PQC_ERROR_BAD_ARG` unless freed first.
+- Confirm signing with an inconsistent secret key fails with `BITCOIN_PQC_ERROR_BAD_KEY`, matching `bitcoin_pqc_secret_key_validate`, and leaves the signature struct empty.
 - Confirm `bitcoin_pqc_keypair_free` and `bitcoin_pqc_signature_free` are idempotent.
 - Confirm zero-length message sign/verify works through Rust and the C ABI.
 
