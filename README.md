@@ -191,6 +191,8 @@ C API ownership rules:
 - `bitcoin_pqc_keypair_t` and `bitcoin_pqc_signature_t` must be zero-initialized before passing them to `bitcoin_pqc_keygen` or `bitcoin_pqc_sign`.
 - Output structs may be reused only after the corresponding free function has been called.
 - Passing a nonzero or already-owned output struct to `bitcoin_pqc_keygen` or `bitcoin_pqc_sign` returns `BITCOIN_PQC_ERROR_BAD_ARG` and leaves the struct unchanged.
+- `bitcoin_pqc_sign` and `bitcoin_pqc_sign_with_stats` return `BITCOIN_PQC_ERROR_BAD_KEY` for a secret key of the wrong size or one whose stored root does not match its seeds, the same check `bitcoin_pqc_secret_key_validate` performs. `BITCOIN_PQC_ERROR_BAD_SIGNATURE` from signing means the signing operation itself failed, not that the key was rejected.
+- `bitcoin_pqc_keygen` and `bitcoin_pqc_sign` return `BITCOIN_PQC_ERROR_OUT_OF_MEMORY` when any internal allocation fails (the key or signature output buffers, or the keygen seed-derivation buffer, which grows with the entropy size) and leave the output struct unchanged.
 - `bitcoin_pqc_keypair_free` and `bitcoin_pqc_signature_free` accept `NULL`, zeroize allocated buffers before release, reset pointers and sizes to zero, and are safe to call repeatedly on the same struct after the first free.
 - Zero-length messages are supported. At the C ABI boundary, `message` may be `NULL` only when `message_size == 0`.
 - Key generation uses caller-provided entropy. Signing is deterministic from
