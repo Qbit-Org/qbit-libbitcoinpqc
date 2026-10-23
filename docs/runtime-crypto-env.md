@@ -54,22 +54,25 @@ The differential test requires two independent Cargo features:
 A requested backend and an effective backend are not the same assertion. A
 request for `x86`, for example, may safely fall back to scalar when the compiler
 or CPU cannot supply the accelerated implementation. Differential output
-therefore reports both requested and effective implementations. A backend only
-counts as accelerated coverage when both SHA dispatchers report that backend;
-fallback remains valid library behavior but is reported as unavailable
-accelerator coverage.
+therefore reports both requested and effective implementations. CommonCrypto
+counts as accelerated coverage only when both SHA dispatchers report it. x86
+counts when SHA-256 reports SHA-NI and SHA-512 reports SHA-NI or scalar:
+bounded30 signs and verifies through SHA-256 only, and SHA-512 SHA-NI is far
+rarer than SHA-256 SHA-NI. Fallback remains valid library behavior but is
+reported as unavailable accelerator coverage.
 
 The observers are passive: they inspect cached dispatcher pointers without
 initializing them. Each differential child process first runs SHA-256 and
 SHA-512 known-answer probes, then reads the effective implementation. The
 explicit SHA-512 probe is required because the active bounded30 profile defines
-`SPX_SHA512=0`, so ordinary key generation, signing, and verification do not
-normally initialize that dispatcher.
+`SPX_SHA512=0`: signing and verification never use SHA-512, and only key
+generation's seed derivation does, so a verify-only child would otherwise leave
+that dispatcher uninitialized.
 
 CI can turn an accelerator expectation into a hard requirement with
 `BACKEND_DIFFERENTIAL_REQUIRE`. macOS requires `commoncrypto`. An x86
 requirement should only be set on a Linux runner whose compiler and CPU are
-known to support both accelerated dispatchers; otherwise the test emits the
+known to support SHA-256 SHA-NI; otherwise the test emits the
 requested/effective capability report without claiming x86 coverage. Windows
 MSVC runs scalar/auto correctness coverage and reports the x86 request as a
 capability check rather than an x86 coverage claim. ARM remains excluded.

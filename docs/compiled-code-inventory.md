@@ -111,8 +111,8 @@ cargo test --features test-bench-env-knobs,test-helpers \
 ```
 
 The target explicitly probes SHA-512 because the active profile defines
-`SPX_SHA512=0`; signing and verification otherwise exercise SHA-256 without
-necessarily initializing the SHA-512 dispatcher. Default production builds
+`SPX_SHA512=0`; signing and verification use only SHA-256, and only key
+generation's seed derivation initializes the SHA-512 dispatcher. Default production builds
 compile neither the env controls nor the introspection wrappers, so their
 compiled API and dispatcher behavior are unchanged.
 

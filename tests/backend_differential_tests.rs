@@ -128,9 +128,16 @@ impl BackendSelection {
             BackendMode::Scalar => {
                 self.sha256 == ShaImplementation::Scalar && self.sha512 == ShaImplementation::Scalar
             }
+            // bounded30 signs and verifies through SHA-256 only (SPX_SHA512=0),
+            // and SHA-512 SHA-NI is far rarer than SHA-256 SHA-NI, so x86
+            // coverage requires SHA-256 SHA-NI and accepts the scalar SHA-512
+            // fallback. The SHA-512 selection is still reported.
             BackendMode::X86 => {
                 self.sha256 == ShaImplementation::X86ShaNi
-                    && self.sha512 == ShaImplementation::X86ShaNi
+                    && matches!(
+                        self.sha512,
+                        ShaImplementation::X86ShaNi | ShaImplementation::Scalar
+                    )
             }
             BackendMode::CommonCrypto => {
                 self.sha256 == ShaImplementation::CommonCrypto

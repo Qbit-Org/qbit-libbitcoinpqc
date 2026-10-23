@@ -81,7 +81,7 @@ Capture these artifacts for each release candidate:
   capability reporting; do not record fallback as x86 coverage
 - Linux CI: retain the requested/effective capability report. Set
   `BACKEND_DIFFERENTIAL_REQUIRE=x86` only on a runner verified or provisioned
-  to select x86 for both SHA-256 and SHA-512
+  to select x86 SHA-NI for SHA-256 (SHA-512 may report scalar)
 
 ## C API Checks
 
