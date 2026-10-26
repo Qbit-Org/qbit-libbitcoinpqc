@@ -122,10 +122,11 @@ jobs:
 
       - name: Run UBSan runtime smoke (Linux)
         if: matrix.platform == 'linux'
+        timeout-minutes: 60
         env:
           CC: clang
           CXX: clang++
-          CFLAGS: "-fsanitize=undefined,unsigned-integer-overflow -fno-sanitize-recover=undefined,unsigned-integer-overflow -fno-omit-frame-pointer"
+          CFLAGS: "-O1 -fsanitize=undefined,unsigned-integer-overflow -fno-sanitize-recover=undefined,unsigned-integer-overflow -fno-omit-frame-pointer"
           LDFLAGS: "-fsanitize=undefined,unsigned-integer-overflow"
         run: |
           UBSAN_RT="$(clang --print-file-name=libclang_rt.ubsan_standalone-x86_64.a)"
@@ -144,7 +145,7 @@ jobs:
           BACKEND_DIFFERENTIAL_CASES: "1"
           CC: clang
           CXX: clang++
-          CFLAGS: "-fsanitize=undefined,unsigned-integer-overflow -fno-sanitize-recover=undefined,unsigned-integer-overflow -fno-omit-frame-pointer"
+          CFLAGS: "-O1 -fsanitize=undefined,unsigned-integer-overflow -fno-sanitize-recover=undefined,unsigned-integer-overflow -fno-omit-frame-pointer"
           LDFLAGS: "-fsanitize=undefined,unsigned-integer-overflow"
         run: |
           UBSAN_RT="$(clang --print-file-name=libclang_rt.ubsan_standalone-x86_64.a)"
