@@ -26,8 +26,9 @@ const OUT_OF_MEMORY: i32 = -6;
 /// asks `malloc` for more than `PTRDIFF_MAX` bytes, which every supported
 /// allocator refuses before the entropy is read, so no out-of-bounds access
 /// can occur. A C library instrumented with AddressSanitizer aborts on such a
-/// request unless `ASAN_OPTIONS=allocator_may_return_null=1` is set; CI does
-/// not run `cargo test` under ASan.
+/// request unless `ASAN_OPTIONS=allocator_may_return_null=1` is set, so the
+/// release-checklist ASan smoke sets it; CI does not run `cargo test` under
+/// ASan.
 const UNSATISFIABLE_ENTROPY_SIZE: usize = usize::MAX - 1024;
 
 #[link(name = "bitcoinpqc", kind = "static")]

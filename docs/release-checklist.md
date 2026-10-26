@@ -138,12 +138,18 @@ part of this release gate.
 Run ASan smoke where the local platform supports the Rust/C link mode:
 
 ```bash
+ASAN_OPTIONS=allocator_may_return_null=1 \
 CC=clang CXX=clang++ \
 CFLAGS="-fsanitize=address -fno-omit-frame-pointer" \
 LDFLAGS="-fsanitize=address" \
 RUSTFLAGS="-Zsanitizer=address" \
 cargo +nightly test --target "$(rustc -vV | sed -n 's|host: ||p')"
 ```
+
+`allocator_may_return_null=1` is required:
+`c_api_keygen_reports_failed_allocation_as_out_of_memory` requests an
+unsatisfiable allocation and expects `malloc` to return NULL, which ASan
+otherwise turns into an abort.
 
 If ASan cannot link on the release host, record the linker/platform blocker and run the UBSan smoke plus fuzz smoke instead.
 
