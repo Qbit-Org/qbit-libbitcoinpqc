@@ -128,6 +128,12 @@ jobs:
           CFLAGS: "-fsanitize=undefined,unsigned-integer-overflow -fno-sanitize-recover=undefined,unsigned-integer-overflow -fno-omit-frame-pointer"
           LDFLAGS: "-fsanitize=undefined,unsigned-integer-overflow"
         run: |
+          UBSAN_RT="$(clang --print-file-name=libclang_rt.ubsan_standalone-x86_64.a)"
+          if [ ! -f "$UBSAN_RT" ]; then
+            echo "Could not find clang UBSan runtime: $UBSAN_RT" >&2
+            exit 1
+          fi
+          export RUSTFLAGS="-C linker=clang -C link-arg=$UBSAN_RT -C link-arg=-lpthread -C link-arg=-ldl -C link-arg=-lrt -C link-arg=-lm -C link-arg=-lc"
           cargo test --verbose --test sha2_backend_tests --test bounded_mode_correctness_tests
           cargo test --verbose --test bounded_mode_correctness_tests bounded_mode_soak_pr_smoke_100_roundtrips -- --ignored --nocapture
 
