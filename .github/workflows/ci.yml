@@ -126,7 +126,10 @@ jobs:
         env:
           CC: clang
           CXX: clang++
-          CFLAGS: "-O1 -fsanitize=undefined,unsigned-integer-overflow -fno-sanitize-recover=undefined,unsigned-integer-overflow -fno-omit-frame-pointer"
+          # The cmake crate drops -O flags from CFLAGS and picks the CMake build type
+          # from the cargo opt-level, so opt-level 1 builds the sanitized C at -O2.
+          CARGO_PROFILE_DEV_OPT_LEVEL: "1"
+          CFLAGS: "-fsanitize=undefined,unsigned-integer-overflow -fno-sanitize-recover=undefined,unsigned-integer-overflow -fno-omit-frame-pointer"
           LDFLAGS: "-fsanitize=undefined,unsigned-integer-overflow"
         run: |
           UBSAN_RT="$(clang --print-file-name=libclang_rt.ubsan_standalone-x86_64.a)"
@@ -145,7 +148,10 @@ jobs:
           BACKEND_DIFFERENTIAL_CASES: "1"
           CC: clang
           CXX: clang++
-          CFLAGS: "-O1 -fsanitize=undefined,unsigned-integer-overflow -fno-sanitize-recover=undefined,unsigned-integer-overflow -fno-omit-frame-pointer"
+          # The cmake crate drops -O flags from CFLAGS and picks the CMake build type
+          # from the cargo opt-level, so opt-level 1 builds the sanitized C at -O2.
+          CARGO_PROFILE_DEV_OPT_LEVEL: "1"
+          CFLAGS: "-fsanitize=undefined,unsigned-integer-overflow -fno-sanitize-recover=undefined,unsigned-integer-overflow -fno-omit-frame-pointer"
           LDFLAGS: "-fsanitize=undefined,unsigned-integer-overflow"
         run: |
           UBSAN_RT="$(clang --print-file-name=libclang_rt.ubsan_standalone-x86_64.a)"
