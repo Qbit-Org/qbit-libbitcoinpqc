@@ -153,6 +153,35 @@ repo-owned. It runs when `slh_dsa_keygen()`, `slh_dsa_sign_with_stats()`
 (and so `slh_dsa_sign()`), `slh_dsa_secret_key_validate()` and
 `slh_dsa_derandomize()` return (#6).
 
+## Vendored Changes In 0.3.2
+
+`0.3.2` changes no vendored SPHINCS+ code that the production build compiles.
+Keys, signatures and verification results are unchanged from `0.3.1`, and the
+golden vectors pass unmodified.
+
+- `sphincsplus/ref/sha2.c` and `sphincsplus/ref/sha2.h`:
+  `spx_sha2_test_sha256_impl()` and `spx_sha2_test_sha512_impl()` report which
+  SHA-256 and SHA-512 block implementation the backend selector cached,
+  without initializing it, so the backend tests can prove that a requested
+  backend ran (#4). Both are compiled only with
+  `BITCOINPQC_ENABLE_TEST_HELPERS`, which the production CMake and Cargo
+  builds leave off.
+
+Repo-owned wrapper and facade changes in `0.3.2`, outside the vendored tree:
+
+- `src/bitcoinpqc.c`, `src/slh_dsa/sign.c` and `src/slh_dsa/keygen.c`:
+  signing with a secret key that fails `slh_dsa_secret_key_validate()`
+  returns `BITCOIN_PQC_ERROR_BAD_KEY` instead of
+  `BITCOIN_PQC_ERROR_BAD_SIGNATURE`, and a failed internal allocation in
+  keygen or signing returns the new `BITCOIN_PQC_ERROR_OUT_OF_MEMORY` (-6)
+  instead of `BITCOIN_PQC_ERROR_BAD_ARG` (output buffers) or
+  `BITCOIN_PQC_ERROR_BAD_KEY` (the keygen seed-derivation buffer).
+  `slh_dsa_sign()` also zeroes `sig` and `*siglen` when it rejects its
+  arguments (#10).
+- `src/secure_zero.h`: the unoptimized-build stack burn grows from 208 KiB to
+  288 KiB, because Clang `-O0` keygen and signing use about 242 KiB, more
+  than the old burn covered. Optimized builds keep the 16 KiB burn.
+
 ## Patch Policy
 
 - No silent vendored crypto updates.
