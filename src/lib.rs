@@ -42,7 +42,8 @@ pub enum PqcError {
     BadSignature,
     NotImplemented,
     SigningLimitExceeded,
-    OutOfMemory,
+    /// A C error code without a dedicated variant, such as
+    /// `BITCOIN_PQC_ERROR_OUT_OF_MEMORY` (-6).
     Other(i32),
 }
 
@@ -61,7 +62,6 @@ impl fmt::Display for PqcError {
             PqcError::BadSignature => write!(f, "Invalid signature provided or invalid format"),
             PqcError::NotImplemented => write!(f, "Operation not implemented"),
             PqcError::SigningLimitExceeded => write!(f, "Signing attempt limit exceeded"),
-            PqcError::OutOfMemory => write!(f, "Memory allocation failed"),
             PqcError::Other(code) => write!(f, "Unexpected error code: {code}"),
         }
     }
@@ -239,7 +239,6 @@ fn pqc_error_from_code(error: bitcoin_pqc_error_t) -> PqcError {
         bitcoin_pqc_error_t_BITCOIN_PQC_ERROR_BAD_SIGNATURE => PqcError::BadSignature,
         bitcoin_pqc_error_t_BITCOIN_PQC_ERROR_NOT_IMPLEMENTED => PqcError::NotImplemented,
         bitcoin_pqc_error_t_BITCOIN_PQC_ERROR_SIGNING_LIMIT => PqcError::SigningLimitExceeded,
-        bitcoin_pqc_error_t_BITCOIN_PQC_ERROR_OUT_OF_MEMORY => PqcError::OutOfMemory,
         _ => PqcError::Other(error),
     }
 }
@@ -747,5 +746,21 @@ pub fn test_seed_keypair_with_prefilled_root_tail(
         ))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn out_of_memory_code_maps_to_other() {
+        let code = bitcoin_pqc_error_t_BITCOIN_PQC_ERROR_OUT_OF_MEMORY;
+
+        assert_eq!(map_error(code), Err(PqcError::Other(code)));
+        assert_eq!(
+            PqcError::Other(code).to_string(),
+            format!("Unexpected error code: {code}")
+        );
     }
 }
