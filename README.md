@@ -298,7 +298,7 @@ only. Secret key and whole `KeyPair` serde support requires the explicit
 
 ## Versioning And Release Checks
 
-Rust and CMake package metadata currently identify the core library as `0.3.1`.
+Rust and CMake package metadata currently identify the core library as `0.3.2`.
 
 Release readiness and supply-chain validation are tracked in:
 
