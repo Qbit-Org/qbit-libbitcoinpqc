@@ -288,13 +288,17 @@ with `SecretKey::try_from_slice` or `SecretKey::from_str` and pass them to
 raw key export or interoperability code; do not log, serialize, or retain copies
 of that data unless the calling protocol requires it.
 
+Rust errors are `PqcError` values. The enum keeps the 0.3.0 variant set, so C
+codes without a dedicated variant, such as `BITCOIN_PQC_ERROR_OUT_OF_MEMORY`
+(-6), reach Rust as `PqcError::Other(code)`.
+
 The Rust `serde` feature serializes/deserializes public keys and signatures
 only. Secret key and whole `KeyPair` serde support requires the explicit
 `secret-key-serde` feature because it emits raw secret key material as hex.
 
 ## Versioning And Release Checks
 
-Rust and CMake package metadata currently identify the core library as `0.3.1`.
+Rust and CMake package metadata currently identify the core library as `0.3.2`.
 
 Release readiness and supply-chain validation are tracked in:
 
