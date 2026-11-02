@@ -24,19 +24,22 @@ static inline void bitcoin_pqc_secure_zero(void *ptr, size_t len) {
  * cost of one wipe per call rather than one per compression.
  *
  * The burn is sized to the stack the calls already use, so it adds little to
- * the caller's stack requirement. Measured by painting the stack (x86-64 GCC,
- * AVX2 path): optimized native keygen/sign use about 13 KiB below the entry
- * point, unoptimized builds about 200 KiB (the -O0 AVX2 8-way transform frame
- * alone is ~190 KiB). Emscripten -O3 keygen/sign use about 1.6 KiB of the
- * linear-memory stack; its reference SHA-2 keeps the schedule in WASM locals.
- * Frames deeper than the burn on another compiler or target are not covered;
- * define BITCOIN_PQC_BURN_STACK_BYTES to match a measured depth.
+ * the caller's stack requirement. Measured by painting the stack (x86-64,
+ * AVX2 path, GCC 15 and Clang 21): optimized native keygen/sign use at most
+ * 13 KiB below the entry point at -O1 through -O3, -Og and -Os. Unoptimized
+ * builds use about 200 KiB with GCC and 242 KiB with Clang (the -O0 AVX2
+ * 8-way transform frame alone is ~190 KiB), so the unoptimized burn is
+ * 288 KiB. Emscripten -O3 keygen/sign use about 1.6 KiB of the linear-memory
+ * stack; its reference SHA-2 keeps the schedule in WASM locals. Frames deeper
+ * than the burn on another compiler or target are not covered, nor are
+ * sanitizer-instrumented unoptimized builds (Clang -O0 UBSan uses about
+ * 390 KiB); define BITCOIN_PQC_BURN_STACK_BYTES to match a measured depth.
  */
 #ifndef BITCOIN_PQC_BURN_STACK_BYTES
 #if defined(__EMSCRIPTEN__)
 #define BITCOIN_PQC_BURN_STACK_BYTES (4u * 1024u)
 #elif (defined(__GNUC__) || defined(__clang__)) && !defined(__OPTIMIZE__)
-#define BITCOIN_PQC_BURN_STACK_BYTES (208u * 1024u)
+#define BITCOIN_PQC_BURN_STACK_BYTES (288u * 1024u)
 #else
 #define BITCOIN_PQC_BURN_STACK_BYTES (16u * 1024u)
 #endif

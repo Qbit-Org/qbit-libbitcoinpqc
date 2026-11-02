@@ -110,3 +110,22 @@ fn test_bad_input_validation() {
         Err(PqcError::BadSignature)
     );
 }
+
+// PqcError is not #[non_exhaustive], so a new variant breaks every downstream
+// exhaustive match. This match names exactly the 0.3.0 variant set with no
+// wildcard arm: adding a variant fails to compile here and needs a minor
+// release. C codes without a variant, such as BITCOIN_PQC_ERROR_OUT_OF_MEMORY
+// (-6), reach Rust as Other(code).
+#[test]
+fn test_pqc_error_variants_match_0_3_0() {
+    let variant = match PqcError::Other(-6) {
+        PqcError::BadArgument => "BadArgument",
+        PqcError::InsufficientData => "InsufficientData",
+        PqcError::BadKey => "BadKey",
+        PqcError::BadSignature => "BadSignature",
+        PqcError::NotImplemented => "NotImplemented",
+        PqcError::SigningLimitExceeded => "SigningLimitExceeded",
+        PqcError::Other(_) => "Other",
+    };
+    assert_eq!(variant, "Other");
+}
