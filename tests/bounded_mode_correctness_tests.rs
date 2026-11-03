@@ -288,7 +288,7 @@ fn bounded_mode_rejects_invalid_signatures() {
 }
 
 #[test]
-#[ignore = "Nightly soak: 10,000 sign/verify roundtrips (~29 min)"]
+#[ignore = "Nightly soak: 10,000 sign/verify roundtrips (~1 h on CI runners)"]
 fn bounded_mode_soak_10k_roundtrips() {
     let elapsed = run_soak_roundtrips(10_000, 0xD0);
     eprintln!("soak test completed 10,000 roundtrips in {elapsed:?}");
