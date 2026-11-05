@@ -374,13 +374,22 @@ jobs:
           if-no-files-found: ignore
 
   nightly-soak:
-    name: Nightly Soak (10k roundtrips, threads=${{ matrix.threads }})
+    name: Nightly Soak (10k roundtrips, threads=${{ matrix.threads }}, SPX_DISABLE_SIMD=${{ matrix.disable_simd }})
     runs-on: [self-hosted, linux, x64, "qbit-trusted-ci"]
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
-        threads: ["1", "2", "4"]
-      fail-fast: true
+        include:
+          # threads=1 soaks the default (AVX2) signing path. On AVX2 hosts
+          # fors_sign never starts FORS workers, so the threaded legs disable
+          # SIMD to soak the pthread FORS path that SPX_FORS_THREADS controls.
+          - threads: "1"
+            disable_simd: "0"
+          - threads: "2"
+            disable_simd: "1"
+          - threads: "4"
+            disable_simd: "1"
+      fail-fast: false
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -402,10 +411,11 @@ jobs:
       - name: Cache dependencies
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
-      - name: Soak test (SPX_FORS_THREADS=${{ matrix.threads }})
+      - name: Soak test (SPX_FORS_THREADS=${{ matrix.threads }}, SPX_DISABLE_SIMD=${{ matrix.disable_simd }})
         env:
           SPX_FORS_THREADS: ${{ matrix.threads }}
-        timeout-minutes: 60
+          SPX_DISABLE_SIMD: ${{ matrix.disable_simd }}
+        timeout-minutes: 90
         run: cargo test --release --features test-bench-env-knobs --test bounded_mode_correctness_tests bounded_mode_soak_10k_roundtrips -- --ignored --nocapture
 
   nightly-forsc-benchmark:
