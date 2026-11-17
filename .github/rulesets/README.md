@@ -10,8 +10,8 @@ merge-method setting in the same way.
 | --- | --- |
 | `signed-commits.json` | A verified signature on every commit added to `main` and the release lines, `release/*.*.x`, such as `release/0.3.x`. No bypass actors. |
 | `required-checks.json` | `main`: the `Stable CI (linux)` and `signed-landing` checks must pass. No bypass actors. |
-| `required-checks-release.json` | The release lines: pull requests only, with no approval required and merge commits only, and the `signed-landing` check must pass. No bypass actors. Not enforced when the branch is created. |
-| `public-main-minimal.json` | `main`: pull requests with one approval and resolved review threads, merge commits only; no deletion or force push. Organization admins can bypass it when merging a pull request. |
+| `required-checks-release.json` | The release lines: pull requests only, with no approval required, squash merges and merge commits only, and the `signed-landing` check must pass. No bypass actors. Not enforced when the branch is created. |
+| `public-main-minimal.json` | `main`: pull requests with one approval and resolved review threads, squash merges and merge commits only; no deletion or force push. Organization admins can bypass it when merging a pull request. |
 
 `release/*.*.x` leaves out working branches such as `release/v0.3.2-prep`, so
 unsigned work can be pushed there. A release line takes changes through pull
@@ -28,11 +28,16 @@ verified signature. Commits already on the branch aren't checked again, but an
 old unsigned commit that a push or merge brings into an existing branch from
 another one is refused like a new one. Commits on a pull request's branch
 don't need one while it is open. Before it merges, a maintainer rewrites the
-branch as one commit, signs that commit with their own key and pushes it, and
-then merges it with a merge commit, which GitHub signs. So the target branch
-gains one commit a person signed, and one merge commit. For a pull request
-from a fork, that push needs "Allow edits by maintainers". Without it, a
-maintainer opens the same change from a branch in this repository.
+branch as one commit, signs that commit with their own key and pushes it. For
+a pull request from a fork, that push needs "Allow edits by maintainers".
+Without it, a maintainer opens the same change from a branch in this
+repository. Once `signed-landing` passes, the pull request is squash-merged:
+GitHub makes one commit on the target branch, carrying the signed commit's
+message, and signs it itself. So the target branch gains that one commit, and
+no merge commit. The commit the maintainer signed stays as the pull request's
+head, which GitHub keeps as `refs/pull/<number>/head`; when
+`squash-sign merge` makes the merge, the landed commit's `Signed-commit:` line
+names it.
 
 On `main`, the maintainer's push dismisses earlier approvals, and whoever
 pushed can't give the new one. Someone else approves again, or an organization
@@ -48,11 +53,16 @@ open pull request usually means it hasn't been squashed and signed yet. If its
 message says it could not check, do what the message says, which is usually to
 re-run it. GitHub's signature rule can't tell that by itself, because it
 accepts any verified signature, GitHub's own included, such as on a web edit
-or an "Update branch" merge. A pull request from a `release/*-prep` branch
-merges as it is, and passes without being judged. That goes by the name alone,
-and only for a branch in this repository: whoever can create a branch with
-such a name can open a pull request that isn't judged, so keep those names for
-that use. The check is required by a ruleset with no bypass actors, so the
+or an "Update branch" merge. A pull request from a `release/*-prep` branch of
+this repository (`AS_IS_HEADS` in the workflow) merges as it is, with any
+number of commits, and the check judges its head commit instead: it passes
+when a person signed that commit with an OpenPGP key that is on their own
+GitHub account. The signature covers the commit's tree and its parents, so
+whoever signed the head answers for everything the pull request brings. A head
+commit that GitHub made fails, such as an "Update branch" merge, a web edit or
+a web conflict resolution, so the last commit of a `-prep` branch is one a
+maintainer makes and signs. A fork's branch never merges as it is. The check
+is required by a ruleset with no bypass actors, so the
 merge button works only once it is green. It always runs from the default
 branch's copy of the workflow, `main`'s, whatever branch the pull request
 targets, so a pull request can't change the rule it is judged by. Its result
@@ -85,10 +95,14 @@ with the workflow's token, and every run in the repository draws on that
 token's hourly allowance of requests. A flood of pull request events can use
 it up, and the check then fails for every pull request until the hour is over.
 
-The repository's settings allow merge commits only (Settings → General → Pull
-Requests). GitHub's squash merge would make the commit itself and sign it with
-GitHub's key, so no person's signature would reach the branch. Its rebase
-merge makes commits with no signature, which the rule refuses.
+The repository's settings allow squash merges and merge commits (Settings →
+General → Pull Requests). An ordinary pull request is squash-merged. GitHub
+signs the commit its squash merge makes, so GitHub's own signature satisfies
+the signature rule on the branch, and what requires a person's signature is
+the `signed-landing` check, which a ruleset nobody can bypass requires. A pull
+request from a `release/*-prep` branch lands as it is, with a merge commit, so
+its commits must already be signed: squashing it would lose its history.
+GitHub's rebase merge makes commits with no signature, which the rule refuses.
 
 ## Apply a change
 
@@ -132,10 +146,10 @@ gh api -X PATCH "$repo" --input .github/repository-settings.json --silent
 
 The merge-method setting isn't a ruleset. To set a repository up from these
 files, apply `signed-commits.json` first, allow merge commits, apply the other
-files, then turn squash and rebase merges off. No step leaves the repository
-unable to merge, and unsigned commits can't land after the first one. The
-chain stops at the first step that fails. Fix that step and run the chain
-again: applying a file twice is harmless. Run it only once
+files, then allow squash merges and turn rebase merges off. No step leaves the
+repository unable to merge, and unsigned commits can't land after the first
+one. The chain stops at the first step that fails. Fix that step and run the
+chain again: applying a file twice is harmless. Run it only once
 `signed-landing.yml` is on `main`, the default branch, and the Actions policy
 allows it. A pull request that is already open shows the check as expected
 until its next push or edit: edit its title or description to start a run.
