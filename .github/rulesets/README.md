@@ -10,8 +10,9 @@ merge-method setting in the same way.
 | --- | --- |
 | `signed-commits.json` | A verified signature on every commit added to `main` and the release lines, `release/*.*.x`, such as `release/0.3.x`. No bypass actors. |
 | `required-checks.json` | `main`: the `Stable CI (linux)` and `signed-landing` checks must pass. No bypass actors. |
-| `required-checks-release.json` | The release lines: pull requests only, with no approval required, squash merges and merge commits only, and the `signed-landing` check must pass. No bypass actors. Not enforced when the branch is created. |
+| `required-checks-release.json` | The release lines: pull requests only, with no approval required, squash merges and merge commits only, and the `signed-landing` check must pass; no deletion or force push. No bypass actors. The check is not enforced when the branch is created. |
 | `public-main-minimal.json` | `main`: pull requests with one approval and resolved review threads, squash merges and merge commits only; no deletion or force push. Organization admins can bypass it when merging a pull request. |
+| `release-tags.json` | `v*` tags can't be moved or deleted. No bypass actors. |
 
 `release/*.*.x` leaves out working branches such as `release/v0.3.2-prep`, so
 unsigned work can be pushed there. A release line takes changes through pull
@@ -160,6 +161,7 @@ apply .github/rulesets/signed-commits.json &&
   apply .github/rulesets/required-checks.json &&
   apply .github/rulesets/required-checks-release.json &&
   apply .github/rulesets/public-main-minimal.json &&
+  apply .github/rulesets/release-tags.json &&
   gh api -X PATCH "$repo" --input .github/repository-settings.json --silent
 ```
 
